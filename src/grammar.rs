@@ -96,7 +96,10 @@ peg::parser! {
 			e:pexpr() { e }
 			--
 			"fn" wb() _ f:fn_def() { f }
-			"[" _ e:(table_item() ** (_ "," _)) _ "]" { Expr::Table(e) }
+			"[" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" { Expr::Tuple(e) }
+			"[|" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" { Expr::List(e) }
+			"[" _ ":" _ "]" { Expr::Map(vec![]) } // Empty map [:]
+			"[" _ e:(map_item() ** (_ "," _)) _ "]" { Expr::Map(e) }
 			"{" _ i:object_item()* "}" { Expr::Object(i) }
 			i:id() { Expr::LExpr(LExpr::Id(i)) }
 			"true" wb() { Expr::Primitive(Primitive::Bool(true)) }
@@ -104,12 +107,11 @@ peg::parser! {
 			"self" wb() { Expr::SelfRef }
 			"nil" wb() { Expr::Primitive(Primitive::Nil) }
 			s:string() { Expr::Primitive(Primitive::String(s)) }
-			f:float() { Expr::Primitive(Primitive::Float(f)) }
+			f:float() { Expr::Primitive(Primitive::from_float(f).unwrap()) }
 			i:int() { Expr::Primitive(Primitive::Int(i)) }
 		}
-		rule table_item() -> (Option<Expr>, Box<Expr>)
-			= k:table_key()? v:expr() { (k, Box::new(v)) }
-		rule table_key() -> Expr = k:expr() _ ":" _ { k }
+		rule map_item() -> (Expr, Expr)
+			= k:expr() _ ":" _ v:expr() { (k, v) }
 		rule object_item() -> (String, Expr) = i:id() _ "=" _ e:expr() { (i,e) }
 		rule fn_def() -> Expr = "(" _ a:(id() ** (_ "," _)) _ ")" _ b:fn_body()
 				{ Expr::Fn(a, b) }

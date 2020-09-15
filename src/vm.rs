@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
 
 use crate::ast::{Primitive, BinaryOp};
@@ -58,10 +60,22 @@ impl<'gc> VmState<'gc> {
 					.ok_or_else(|| String::from("Accessing undefined constant"))?;
 				self.stack.push(Value::from(compiled_cst));
 			},
+			Instr::NewTuple(cnt) => {
+				let start = self.stack.len() - (*cnt as usize);
+				let list: Vec<Value> = self.stack.drain(start..).collect();
+				self.stack.push(Value::Tuple(Tuple::new(list)));
+			},
 			Instr::NewList(cnt) => {
 				let start = self.stack.len() - (*cnt as usize);
 				let list: Vec<Value> = self.stack.drain(start..).collect();
 				self.stack.push(Value::List(Gc::allocate(ctx, list)));
+			},
+			Instr::NewMap(cnt) => {
+				let start = self.stack.len() - 2*(*cnt as usize);
+				let (mut keys, mut values): (Vec<(usize,Value)>,Vec<(usize,Value)>) =
+					self.stack.drain(start..).enumerate().partition(|(i,_)| i % 2 == 0);
+				let map: HashMap<Value, Value> = keys.drain(..).map(|(_,v)| v).zip(values.drain(..).map(|(_,v)| v)).collect();
+				self.stack.push(Value::Map(Gc::allocate(ctx, map)));
 			},
 			Instr::Binary(op) => {
 				let b = self.pop()?;
@@ -101,13 +115,13 @@ impl<'gc> VmState<'gc> {
 							if op == &BinaryOp::Plus { expected_types::<()>("Int, Float, or String", &a).unwrap_err() } else { err })?;
 						let b = b.get_numeric()?;
 						let c = match op {
-							BinaryOp::Plus => Primitive::Float(a + b),
-							BinaryOp::Minus => Primitive::Float(a - b),
-							BinaryOp::Times => Primitive::Float(a * b),
+							BinaryOp::Plus => Primitive::from_float(a + b)?,
+							BinaryOp::Minus => Primitive::from_float(a - b)?,
+							BinaryOp::Times => Primitive::from_float(a * b)?,
 							BinaryOp::Divides => {
 								let c = a / b;
 								if c.is_finite() {
-									Primitive::Float(c)
+									Primitive::from_float(c)?
 								} else {
 									return Err(String::from("Division by zero"));
 								}
@@ -122,14 +136,14 @@ impl<'gc> VmState<'gc> {
 								}
 								Primitive::Int(c as i32)
 							},
-							BinaryOp::Modulo => Primitive::Float(a.rem_euclid(b)),
-							BinaryOp::Power => Primitive::Float(a.powf(b)),
+							BinaryOp::Modulo => Primitive::from_float(a.rem_euclid(b))?,
+							BinaryOp::Power => Primitive::from_float(a.powf(b))?,
 							_ => unreachable!(),
 						};
 						self.stack.push(Value::Primitive(c));
 					},
 					BinaryOp::Eq => {
-						self.stack.push(Value::Primitive(Primitive::Bool(a.eq(&b))));
+						self.stack.push(Value::Primitive(Primitive::Bool(a.struct_eq(&b))));
 					},
 					_ => { todo!() },
 				}

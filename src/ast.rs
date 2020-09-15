@@ -1,10 +1,19 @@
-#[derive(Debug, Clone, PartialEq)]
+use ordered_float::NotNan;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Primitive {
 	Int(i32),
-	Float(f64),
+	Float(NotNan<f64>),
 	String(String),
 	Bool(bool),
 	Nil,
+}
+
+impl Primitive {
+	pub fn from_float(f: f64) -> Result<Self, String> {
+		let not_nan = NotNan::new(f).map_err(|_| "NaN is not allowed")?;
+		Ok(Primitive::Float(not_nan))
+	}
 }
 
 #[derive(Debug, Clone)]
@@ -45,7 +54,9 @@ unsafe impl gc_arena::Collect for Primitive {
 #[derive(Debug, Clone)]
 pub enum Expr {
 	Primitive(Primitive),
-	Table(Vec<(Option<Expr>, Box<Expr>)>),
+	Tuple(Vec<Expr>),
+	List(Vec<Expr>),
+	Map(Vec<(Expr, Expr)>),
 	Object(Vec<(String, Expr)>),
 	Fn(Vec<String>, Block),
 	LExpr(LExpr),

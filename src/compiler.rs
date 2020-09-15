@@ -25,6 +25,22 @@ impl<'a> StatementContext<'a> {
 			stack_size: 0
 		}
 	}
+	
+	fn compile_sequence(&mut self, values: Vec<Expr>, mutable: bool) -> Result<(), String> {
+		let len = u16::try_from(values.len())
+			.map_err(|_| format!("{} is too long", if mutable { "List" } else { "Tuple"} ))?;
+		for expr in values {
+			self.compile_expression(expr)?;
+		}
+		if mutable {
+			self.code.push(Instr::NewList(len));
+		} else {
+			self.code.push(Instr::NewTuple(len));
+		}
+		self.stack_size -= len as usize;
+		self.stack_size += 1;
+		Ok(())
+	}
 
 	fn compile_expression(&mut self, expr: Expr) -> Result<(), String> {
 		match expr {
@@ -43,23 +59,19 @@ impl<'a> StatementContext<'a> {
 				self.code.push(Instr::Constant(idx));
 				self.stack_size += 1;
 			},
-			Expr::Table(pairs) => {
+			Expr::Tuple(values) => self.compile_sequence(values, false)?,
+			Expr::List(values) => self.compile_sequence(values, true)?,
+			Expr::Map(pairs) => {
 				let len = u16::try_from(pairs.len())
-					.map_err(|_| String::from("List is too large"))?;
-				for (key, expr) in pairs {
-					match key {
-						Some(_key) => {
-							todo!();
-						},
-						None => {
-							self.compile_expression(*expr)?;
-						}
-					}
+					.map_err(|_| String::from("Map is too large"))?;
+				for (key, value) in pairs {
+					self.compile_expression(key)?;
+					self.compile_expression(value)?;
 				}
-				self.code.push(Instr::NewList(len));
+				self.code.push(Instr::NewMap(len));
+				self.stack_size -= 2*len as usize;
 				self.stack_size += 1;
-				self.stack_size -= len as usize;
-			}
+			},
 			Expr::LExpr(lexpr) => {
 				match lexpr {
 					LExpr::Id(id) => {

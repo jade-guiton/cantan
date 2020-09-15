@@ -23,7 +23,9 @@ pub enum Instr {
 	
 	// Values
 	Constant(u16), // Constant by index → Stack top
+	NewTuple(u16), // Take N values from stack → Stack top
 	NewList(u16), // Take N values from stack → Stack top
+	NewMap(u16), // Take 2N values from stack → Stack top
 	
 	// Operations
 	Binary(BinaryOp), // Binary operation on stack

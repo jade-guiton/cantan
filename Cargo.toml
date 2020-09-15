@@ -5,8 +5,9 @@ authors = ["luapix <luapixel@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-peg = "0.6.3"
-unicode-xid = "0.2.1"
-num-traits = "0.2.12"
-rustyline = "6.2.0"
 gc-arena = "0.2.0"
+num-traits = "0.2.12"
+ordered-float = "2.0.0"
+peg = "0.6.3"
+rustyline = "6.2.0"
+unicode-xid = "0.2.1"
