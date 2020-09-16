@@ -81,7 +81,13 @@ peg::parser! {
 			x:(@) _ "+" _ y:@ { Expr::Binary(BinaryOp::Plus,  Box::new(x), Box::new(y)) }
 			x:(@) _ "-" _ y:@ { Expr::Binary(BinaryOp::Minus, Box::new(x), Box::new(y)) }
 			--
-			"-" _ x:@ { Expr::Unary(UnaryOp::Minus, Box::new(x)) }
+			"-" _ x:@ {
+				if let Expr::Primitive(Primitive::Int(i)) = x {
+					Expr::Primitive(Primitive::Int(-i))
+				} else {
+					Expr::Unary(UnaryOp::Minus, Box::new(x))
+				}
+			}
 			--
 			x:(@) _ "*" _ y:@  { Expr::Binary(BinaryOp::Times,      Box::new(x), Box::new(y)) }
 			x:(@) _ "//" _ y:@ { Expr::Binary(BinaryOp::IntDivides, Box::new(x), Box::new(y)) }
@@ -98,9 +104,9 @@ peg::parser! {
 			"fn" wb() _ f:fn_def() { f }
 			"[" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" { Expr::Tuple(e) }
 			"[|" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" { Expr::List(e) }
-			"[" _ ":" _ "]" { Expr::Map(vec![]) } // Empty map [:]
+			"[" _ "=" _ "]" { Expr::Map(vec![]) } // Empty map [:]
 			"[" _ e:(map_item() ** (_ "," _)) _ "]" { Expr::Map(e) }
-			"{" _ i:object_item()* "}" { Expr::Object(i) }
+			"{" _ i:(object_item() ** (_ "," _)) _ "}" { Expr::Object(i) }
 			i:id() { Expr::LExpr(LExpr::Id(i)) }
 			"true" wb() { Expr::Primitive(Primitive::Bool(true)) }
 			"false" wb() { Expr::Primitive(Primitive::Bool(false)) }
@@ -111,7 +117,7 @@ peg::parser! {
 			i:int() { Expr::Primitive(Primitive::Int(i)) }
 		}
 		rule map_item() -> (Expr, Expr)
-			= k:expr() _ ":" _ v:expr() { (k, v) }
+			= k:expr() _ "=" _ v:expr() { (k, v) }
 		rule object_item() -> (String, Expr) = i:id() _ "=" _ e:expr() { (i,e) }
 		rule fn_def() -> Expr = "(" _ a:(id() ** (_ "," _)) _ ")" _ b:fn_body()
 				{ Expr::Fn(a, b) }
@@ -126,7 +132,7 @@ peg::parser! {
 				{? if RESERVED.contains(&i) { Err("") } else { Ok(String::from(i)) } } }
 			/ expected!("identifier")
 		rule int() -> i32
-			= i:quiet! { i:$(['+'|'-']? ['0'..='9']+) {i} } {? i.parse().map_err(|_| "integer fitting in 32 bits") }
+			= i:quiet! { i:$(['0'..='9']+) {i} } {? i.parse().map_err(|_| "integer fitting in 32 bits") }
 			/ expected!("integer")
 			
 		rule float() -> f64

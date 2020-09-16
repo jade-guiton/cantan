@@ -9,6 +9,7 @@ pub struct StatementContext<'a> {
 	func_ctx: &'a FunctionContext,
 	code: Vec<Instr>,
 	csts: Vec<Primitive>,
+	classes: Vec<Vec<String>>,
 	used_regs: Vec<u16>,
 	locals: Vec<(String, u16)>,
 	stack_size: usize,
@@ -20,6 +21,7 @@ impl<'a> StatementContext<'a> {
 			func_ctx,
 			code: vec![],
 			csts: vec![],
+			classes: vec![],
 			used_regs: vec![],
 			locals: vec![],
 			stack_size: 0
@@ -41,21 +43,23 @@ impl<'a> StatementContext<'a> {
 		self.stack_size += 1;
 		Ok(())
 	}
+	
+	fn add_prim_cst(&mut self, cst: Primitive) -> Result<u16, String> {
+		let mut existing_csts = self.func_ctx.func.csts.iter().chain(self.csts.iter());
+		if let Some(idx) = existing_csts.position(|cst2| &cst == cst2) {
+			Ok(idx as u16)
+		} else {
+			let idx = u16::try_from(self.func_ctx.func.csts.len() + self.csts.len())
+				.map_err(|_| String::from("Too many constants"))?;
+			self.csts.push(cst);
+			Ok(idx)
+		}
+	}
 
 	fn compile_expression(&mut self, expr: Expr) -> Result<(), String> {
 		match expr {
 			Expr::Primitive(cst) => {
-				let mut existing_csts = self.func_ctx.func.csts.iter().chain(self.csts.iter());
-				let idx = {
-					if let Some(idx) = existing_csts.position(|cst2| &cst == cst2) {
-						idx as u16
-					} else {
-						let idx = u16::try_from(self.func_ctx.func.csts.len() + self.csts.len())
-							.map_err(|_| String::from("Too many constants"))?;
-						self.csts.push(cst);
-						idx
-					}
-				};
+				let idx = self.add_prim_cst(cst)?;
 				self.code.push(Instr::Constant(idx));
 				self.stack_size += 1;
 			},
@@ -72,6 +76,25 @@ impl<'a> StatementContext<'a> {
 				self.stack_size -= 2*len as usize;
 				self.stack_size += 1;
 			},
+			Expr::Object(pairs) => {
+				let len = u16::try_from(pairs.len())
+					.map_err(|_| String::from("Object is too large"))?;
+				let mut class = vec![];
+				for (id, value) in pairs {
+					class.push(id);
+					self.compile_expression(value)?;
+				}
+				let idx = self.func_ctx.func.classes.iter().position(|c| c == &class)
+					.unwrap_or_else(|| {
+						let idx = self.func_ctx.func.classes.len() + self.classes.len();
+						self.classes.push(class);
+						idx
+					});
+				let idx = u16::try_from(idx).map_err(|_| String::from("Too many object classes"))?;
+				self.code.push(Instr::NewObject(idx));
+				self.stack_size -= len as usize;
+				self.stack_size += 1;
+			},
 			Expr::LExpr(lexpr) => {
 				match lexpr {
 					LExpr::Id(id) => {
@@ -83,7 +106,17 @@ impl<'a> StatementContext<'a> {
 							None => return Err(format!("Referencing undefined local '{}'", id)),
 						}
 					},
-					_ => { todo!() },
+					LExpr::Index(seq, idx) => {
+						self.compile_expression(*seq)?;
+						self.compile_expression(*idx)?;
+						self.code.push(Instr::Index);
+						self.stack_size -= 1;
+					},
+					LExpr::Prop(obj, prop) => {
+						self.compile_expression(*obj)?;
+						let cst_idx = self.add_prim_cst(Primitive::String(prop))?;
+						self.code.push(Instr::Prop(cst_idx));
+					},
 				}
 			},
 			Expr::Binary(op, expr1, expr2) => {
@@ -180,7 +213,7 @@ impl FunctionContext {
 		let mut stat_ctx = StatementContext::new(&self);
 		stat_ctx.compile_expression(expr)?;
 		
-		let StatementContext { used_regs, locals, mut code, mut csts, .. } = stat_ctx;
+		let StatementContext { used_regs, locals, mut code, mut csts, mut classes, .. } = stat_ctx;
 		for reg in used_regs {
 			self.used_regs.add(reg);
 		}
@@ -189,6 +222,7 @@ impl FunctionContext {
 		}
 		self.func.code.append(&mut code);
 		self.func.csts.append(&mut csts);
+		self.func.classes.append(&mut classes);
 		
 		Ok(())
 	}
@@ -197,7 +231,7 @@ impl FunctionContext {
 		let mut stat_ctx = StatementContext::new(&self);
 		stat_ctx.compile_statement(stat)?;
 		
-		let StatementContext { used_regs, locals, mut code, mut csts, .. } = stat_ctx;
+		let StatementContext { used_regs, locals, mut code, mut csts, mut classes, .. } = stat_ctx;
 		for reg in used_regs {
 			self.used_regs.add(reg);
 		}
@@ -206,6 +240,7 @@ impl FunctionContext {
 		}
 		self.func.code.append(&mut code);
 		self.func.csts.append(&mut csts);
+		self.func.classes.append(&mut classes);
 		
 		Ok(())
 	}

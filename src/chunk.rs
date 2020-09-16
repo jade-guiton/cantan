@@ -26,11 +26,14 @@ pub enum Instr {
 	NewTuple(u16), // Take N values from stack → Stack top
 	NewList(u16), // Take N values from stack → Stack top
 	NewMap(u16), // Take 2N values from stack → Stack top
+	NewObject(u16), // Object from class by idx → Stack top
 	
 	// Operations
 	Binary(BinaryOp), // Binary operation on stack
 	BinaryOn(BinaryOp, u16), // reg [op]= stack
 	Unary(UnaryOp), // Unary operation on stack
+	Index, // stack[-2] [ stack[-1] ] → stack
+	Prop(u16), // stack[-1] [ cst(u16) ] → stack
 	Next(u16), // next(reg) → stack with reg iterator
 }
 
@@ -39,6 +42,7 @@ pub struct CompiledFunction {
 	pub child_func: Vec<CompiledFunction>,
 	pub arg_cnt: u16,
 	pub csts: Vec<Primitive>,
+	pub classes: Vec<Vec<String>>,
 	pub code: Vec<Instr>,
 }
 
@@ -48,6 +52,7 @@ impl CompiledFunction {
 			child_func: vec![],
 			arg_cnt,
 			csts: vec![],
+			classes: vec![],
 			code: vec![],
 		}
 	}

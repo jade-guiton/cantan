@@ -1,5 +1,6 @@
 use gc_arena::Collect;
 use std::hash::{Hash, Hasher};
+use std::convert::TryFrom;
 use std::collections::HashMap;
 use std::fmt::Write;
 use std::ops::Deref;
@@ -37,11 +38,12 @@ pub enum Value<'gc> {
 	Tuple(Tuple<'gc>),
 	List(Gc<'gc, Vec<Value<'gc>>>),
 	Map(Gc<'gc, HashMap<Value<'gc>, Value<'gc>>>),
+	Object(Gc<'gc, HashMap<String, Value<'gc>>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
-	Int, Float, String, Bool, Nil, Tuple, List, Map,
+	Int, Float, String, Bool, Nil, Tuple, List, Map, Object,
 }
 
 impl Value<'_> {
@@ -59,6 +61,7 @@ impl Value<'_> {
 			Value::Tuple(_) => Type::Tuple,
 			Value::List(_) => Type::List,
 			Value::Map(_) => Type::Map,
+			Value::Object(_) => Type::Object,
 		}
 	}
 }
@@ -117,6 +120,10 @@ impl<'gc> Value<'gc> {
 				if m1.len() == m2.len() {
 					m1.iter().all(|(k,v)| m2.get(k).map_or(false, |v2| v.struct_eq(v2)))
 				} else { false }
+			(Value::Object(o1), Value::Object(o2)) =>
+				if o1.len() == o2.len() {
+					o1.iter().all(|(k,v)| o2.get(k).map_or(false, |v2| v.struct_eq(v2)))
+				} else { false }
 			_ => false,
 		}
 	}
@@ -158,10 +165,10 @@ impl<'gc> Value<'gc> {
 				let mut buf = String::new();
 				write!(buf, "[").unwrap();
 				if map.len() == 0 {
-					write!(buf, ":").unwrap();
+					write!(buf, "=").unwrap();
 				} else {
 					for (idx, (key, val)) in map.iter().enumerate() {
-						write!(buf, "{}: {}", key.repr(), val.repr()).unwrap();
+						write!(buf, "{}={}", key.repr(), val.repr()).unwrap();
 						if idx < map.len() - 1 {
 							write!(buf, ", ").unwrap();
 						}
@@ -170,6 +177,50 @@ impl<'gc> Value<'gc> {
 				write!(buf, "]").unwrap();
 				buf
 			},
+			Value::Object(obj) => {
+				let mut buf = String::new();
+				write!(buf, "{{").unwrap();
+				for (idx, (key, val)) in obj.iter().enumerate() {
+					write!(buf, "{}={}", key, val.repr()).unwrap();
+					if idx < obj.len() - 1 {
+						write!(buf, ", ").unwrap();
+					}
+				}
+				write!(buf, "}}").unwrap();
+				buf
+			},
+		}
+	}
+	
+	pub fn index(&self, other: &Value<'gc>) -> Result<Value<'gc>, String> {
+		match self {
+			Value::Tuple(tuple) => {
+				let idx = other.get_int()?;
+				usize::try_from(idx).ok().and_then(|idx| tuple.get(idx)).cloned()
+					.ok_or_else(|| format!("Trying to index {}-tuple with: {}", tuple.len(), idx))
+			},
+			Value::List(list) => {
+				let idx = other.get_int()?;
+				usize::try_from(idx).ok().and_then(|idx| list.get(idx)).cloned()
+					.ok_or_else(|| format!("Trying to index list of length {} with: {}", list.len(), idx))
+			},
+			Value::Map(map) => {
+				Ok(map.get(other).ok_or_else(|| format!("Map does not contain key: {}", other.repr()))?.clone())
+			},
+			_ => {
+				Err(format!("{:?} cannot be indexed", self.get_type()))
+			}
+		}
+	}
+	
+	pub fn prop(&self, prop: &str) -> Result<Value<'gc>, String> {
+		match self {
+			Value::Object(obj) => {
+				Ok(obj.get(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?.clone())
+			},
+			_ => {
+				Err(format!("Cannot get prop of {:?}", self.get_type()))
+			}
 		}
 	}
 }
@@ -199,6 +250,7 @@ impl Hash for Value<'_> {
 			Value::Tuple(values) => values.hash(state),
 			Value::List(list) => Gc::as_ptr(*list).hash(state),
 			Value::Map(map) => Gc::as_ptr(*map).hash(state),
+			Value::Object(obj) => Gc::as_ptr(*obj).hash(state),
 		}
 	}
 }

@@ -35,6 +35,12 @@ impl<'gc> VmState<'gc> {
 			.ok_or_else(|| String::from("Trying to pop empty stack"))
 	}
 	
+	fn get_cst(&self, func: &CompiledFunction, idx: u16) -> Result<Value<'gc>, String> {
+		let cst = func.csts.get(idx as usize)
+			.ok_or_else(|| String::from("Accessing undefined constant"))?;
+		Ok(Value::from(cst))
+	}
+	
 	fn execute_instr(&mut self, ctx: MutationContext<'gc, '_>, func: &CompiledFunction, idx: usize) -> Result<(), String> {
 		let instr = &func.code[idx];
 		match instr {
@@ -56,9 +62,7 @@ impl<'gc> VmState<'gc> {
 				self.pop()?;
 			},
 			Instr::Constant(idx) => {
-				let compiled_cst = func.csts.get(*idx as usize)
-					.ok_or_else(|| String::from("Accessing undefined constant"))?;
-				self.stack.push(Value::from(compiled_cst));
+				self.stack.push(self.get_cst(func, *idx)?);
 			},
 			Instr::NewTuple(cnt) => {
 				let start = self.stack.len() - (*cnt as usize);
@@ -76,6 +80,12 @@ impl<'gc> VmState<'gc> {
 					self.stack.drain(start..).enumerate().partition(|(i,_)| i % 2 == 0);
 				let map: HashMap<Value, Value> = keys.drain(..).map(|(_,v)| v).zip(values.drain(..).map(|(_,v)| v)).collect();
 				self.stack.push(Value::Map(Gc::allocate(ctx, map)));
+			},
+			Instr::NewObject(class_idx) => {
+				let class = func.classes.get(*class_idx as usize).ok_or_else(|| String::from("Using undefined object class"))?;
+				let start = self.stack.len() - class.len();
+				let obj: HashMap<String, Value> = class.iter().cloned().zip(self.stack.drain(start..)).collect();
+				self.stack.push(Value::Object(Gc::allocate(ctx, obj)));
 			},
 			Instr::Binary(op) => {
 				let b = self.pop()?;
@@ -147,7 +157,17 @@ impl<'gc> VmState<'gc> {
 					},
 					_ => { todo!() },
 				}
-			}
+			},
+			Instr::Index => {
+				let idx = self.pop()?;
+				let coll = self.pop()?;
+				self.stack.push(coll.index(&idx)?);
+			},
+			Instr::Prop(cst_idx) => {
+				let obj = self.pop()?;
+				let idx = self.get_cst(func, *cst_idx)?.get_string()?;
+				self.stack.push(obj.prop(&idx)?);
+			},
 			_ => { todo!() },
 		}
 		Ok(())
