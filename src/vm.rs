@@ -48,7 +48,16 @@ impl<'gc> VmState<'gc> {
 		while idx < range.end {
 			
 			let instr = &func.code[idx];
+			
 			let mut jumped = false;
+			let mut jump = |rel: i16| {
+				if rel <= 0 {
+					idx -= -rel as usize;
+				} else {
+					idx += rel as usize;
+				}
+				jumped = true;
+			};
 			
 			match instr {
 				Instr::Load(reg) => {
@@ -72,12 +81,25 @@ impl<'gc> VmState<'gc> {
 					println!("{}", self.pop()?.repr());
 				},
 				Instr::Jump(rel) => {
-					if *rel <= 0 {
-						idx -= -rel as usize;
-					} else {
-						idx += *rel as usize;
+					jump(*rel);
+				},
+				Instr::JumpIf(rel) => {
+					let val = self.pop()?;
+					if val.get_bool()? {
+						jump(*rel);
 					}
-					jumped = true;
+				},
+				Instr::JumpIfNot(rel) => {
+					let val = self.pop()?;
+					if !val.get_bool()? {
+						jump(*rel);
+					}
+				},
+				Instr::JumpIfNil(rel) => {
+					let val = self.pop()?;
+					if let Value::Primitive(Primitive::Nil) = val {
+						jump(*rel);
+					}
 				},
 				Instr::Constant(idx) => {
 					self.stack.push(self.get_cst(func, *idx)?);

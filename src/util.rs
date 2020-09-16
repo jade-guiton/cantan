@@ -79,4 +79,22 @@ impl<T: PrimInt> IntSet<T> {
 			},
 		}
 	}
+	
+	pub fn remove(&mut self, val: T) {
+		match self.find(val, 0, self.ranges.len()) {
+			IntPlacement::In(idx) => {
+				let range = &mut self.ranges[idx];
+				if val == range.start {
+					range.start = range.start + T::one();
+				} else if val == range.end - T::one() {
+					range.end = range.end - T::one();
+				} else {
+					let old_end = range.end;
+					range.end = val;
+					self.ranges.insert(idx + 1, (val+T::one())..old_end);
+				}
+			},
+			IntPlacement::Before(_idx) => panic!("Int is not in IntSet"),
+		}
+	}
 }

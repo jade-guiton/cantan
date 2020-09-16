@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use rustyline::{Editor, error::ReadlineError};
 
 use crate::ast::Statement;
-use crate::compiler::FunctionContext;
+use crate::compiler::{BlockType, FunctionContext};
 use crate::grammar::parse_partial_stat;
 use crate::vm::Vm;
 use crate::print_err;
@@ -21,8 +21,10 @@ pub struct Repl {
 
 impl Repl {
 	pub fn new(show_bytecode: bool) -> Self {
+		let mut func_ctx = FunctionContext::new(vec![]).unwrap();
+		func_ctx.start_block(BlockType::FunctionMain);
 		Repl {
-			func_ctx: FunctionContext::new(vec![]).unwrap(),
+			func_ctx,
 			code_idx: 0,
 			vm: Vm::new(),
 			show_bytecode,
@@ -78,7 +80,7 @@ impl Repl {
 	fn compile_stat(&mut self, stat: Statement) -> Result<(), String> {
 		if let Statement::ExprStat(expr) = stat {
 			self.func_ctx.compile_expression(expr)
-				.map(|()| self.func_ctx.pop_log())
+				.map(|()| self.func_ctx.add_log())
 		} else {
 			self.func_ctx.compile_statement(stat)
 		}

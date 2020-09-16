@@ -7,32 +7,42 @@ use crate::util::IntSet;
 
 
 #[derive(Clone)]
+pub struct BlockContext {
+	breakable: bool,
+	locals: HashMap<String, u16>,
+}
+
+#[derive(PartialEq)]
+pub enum BlockType {
+	FunctionMain,
+	Normal,
+	Breakable,
+}
+
+#[derive(Clone)]
 pub struct FunctionContext {
 	pub func: CompiledFunction,
+	arg_names: Vec<String>,
 	used_regs: IntSet<u16>,
-	locals: HashMap<String, u16>,
+	blocks: Vec<BlockContext>,
 	stack_size: usize,
 }
 
 impl FunctionContext {
-	pub fn new(mut arg_names: Vec<String>) -> Result<Self, String> {
+	pub fn new(arg_names: Vec<String>) -> Result<Self, String> {
 		let arg_cnt = u16::try_from(arg_names.len())
 			.map_err(|_| String::from("Too many arguments in function"))?;
-		
-		let mut func_ctx = FunctionContext {
+		Ok(FunctionContext {
 			func: CompiledFunction::new(arg_cnt),
+			arg_names,
 			used_regs: IntSet::new(),
-			locals: HashMap::new(),
+			blocks: vec![],
 			stack_size: 0,
-		};
-		
-		for (idx, arg_name) in arg_names.drain(..).enumerate() {
-			let reg = idx as u16;
-			func_ctx.used_regs.add(reg);
-			func_ctx.locals.insert(arg_name, reg);
-		}
-		
-		Ok(func_ctx)
+		})
+	}
+	
+	fn find_local(&self, id: &str) -> Option<u16> {
+		self.blocks.iter().rev().find_map(|b| b.locals.get(id).copied())
 	}
 	
 	fn compile_sequence(&mut self, values: Vec<Expr>, mutable: bool) -> Result<(), String> {
@@ -104,7 +114,7 @@ impl FunctionContext {
 			Expr::LExpr(lexpr) => {
 				match lexpr {
 					LExpr::Id(id) => {
-						match self.locals.get(&id).copied() {
+						match self.find_local(&id) {
 							Some(reg) => {
 								self.func.code.push(Instr::Load(reg));
 								self.stack_size += 1;
@@ -135,6 +145,15 @@ impl FunctionContext {
 		}
 		Ok(())
 	}
+	
+	fn compute_jump_from(&self, from: usize) -> Result<i16, String> {
+		i16::try_from((self.func.code.len() as isize) - (from as isize))
+			.map_err(|_| String::from("Jump in code is too far to encode"))
+	}
+	fn compute_jump_to(&self, to: usize) -> Result<i16, String> {
+		i16::try_from((to as isize) - (self.func.code.len() as isize))
+			.map_err(|_| String::from("Jump in code is too far to encode"))
+	}
 
 	pub fn compile_statement(&mut self, stat: Statement) -> Result<(), String> {
 		match stat {
@@ -142,13 +161,13 @@ impl FunctionContext {
 				match lexpr {
 					LExpr::Id(id) => {
 						let reg = {
-							if let Some(reg) = self.locals.get(&id).copied() { // Shadowing previous binding
+							if let Some(reg) = self.blocks.last_mut().unwrap().locals.get(&id).copied() { // Shadowing previous binding
 								self.func.code.push(Instr::Drop(reg));
 								reg
 							} else {
 								let reg = self.used_regs.find_hole();
 								self.used_regs.add(reg);
-								self.locals.insert(id, reg);
+								self.blocks.last_mut().unwrap().locals.insert(id, reg);
 								reg
 							}
 						};
@@ -165,7 +184,7 @@ impl FunctionContext {
 				self.compile_expression(expr)?;
 				match lexpr {
 					LExpr::Id(id) => {
-						if let Some(reg) = self.locals.get(&id).copied() {
+						if let Some(reg) = self.find_local(&id) {
 							self.func.code.push(Instr::Store(reg));
 							self.stack_size -= 1;
 						} else {
@@ -175,13 +194,41 @@ impl FunctionContext {
 					_ => { todo!() },
 				}
 			},
-			Statement::Loop(block) => {
-				let start = self.func.code.len() as i16;
-				for stat in block {
-					self.compile_statement(stat)?;
+			Statement::If(cond, then, elseifs, else_block) => {
+				let mut end_jumps = vec![];
+				let mut prev_jump;
+				
+				for (cond, block) in vec![(cond, then)].drain(..).chain(elseifs) {
+					self.compile_expression(cond)?;
+					prev_jump = self.func.code.len();
+					self.func.code.push(Instr::JumpIfNot(0));
+					self.stack_size -= 1;
+					self.compile_block(block, BlockType::Normal)?;
+					end_jumps.push(self.func.code.len());
+					self.func.code.push(Instr::Jump(0));
+					self.func.code[prev_jump] = Instr::JumpIfNot(
+						self.compute_jump_from(prev_jump)?);
 				}
-				let jump = start - self.func.code.len() as i16;
+				
+				if let Some(else_block) = else_block {
+					self.compile_block(else_block, BlockType::Normal)?;
+				}
+				
+				for end_jump in end_jumps {
+					self.func.code[end_jump] = Instr::Jump(
+						self.compute_jump_from(end_jump)?);
+				}
+			}
+			Statement::Loop(block) => {
+				let start = self.func.code.len();
+				self.compile_block(block, BlockType::Breakable)?;
+				let jump = self.compute_jump_to(start)?;
 				self.func.code.push(Instr::Jump(jump));
+			},
+			Statement::Log(expr) => { // Temporary
+				self.compile_expression(expr)?;
+				self.func.code.push(Instr::Log);
+				self.stack_size -= 1;
 			},
 			Statement::ExprStat(expr) => {
 				self.compile_expression(expr)?;
@@ -196,19 +243,45 @@ impl FunctionContext {
 		Ok(())
 	}
 	
-	pub fn pop_log(&mut self) {
+	pub fn start_block(&mut self, block_type: BlockType) {
+		self.blocks.push(BlockContext {
+			breakable: block_type == BlockType::Breakable,
+			locals: HashMap::new()
+		});
+		
+		if block_type == BlockType::FunctionMain {
+			for (idx, arg_name) in self.arg_names.iter().enumerate() {
+				let reg = idx as u16;
+				self.used_regs.add(reg);
+				self.blocks.last_mut().unwrap().locals.insert(arg_name.clone(), reg);
+			}
+		}
+	}
+	
+	fn compile_block(&mut self, block: Block, block_type: BlockType) -> Result<(), String> {
+		self.start_block(block_type);
+		
+		for stat in block {
+			self.compile_statement(stat)?;
+		}
+		
+		for (_, reg) in self.blocks.last_mut().unwrap().locals.drain() {
+			self.func.code.push(Instr::Drop(reg));
+			self.used_regs.remove(reg);
+		}
+		
+		self.blocks.pop();
+		
+		Ok(())
+	}
+	
+	pub fn add_log(&mut self) {
 		self.func.code.push(Instr::Log);
 		self.stack_size -= 1;
 	}
 	
 	pub fn compile_function(mut self, block: Block) -> Result<CompiledFunction, String> {
-		for stat in block {
-			self.compile_statement(stat)?;
-		}
-		
-		for (_id, reg) in self.locals.drain() {
-			self.func.code.push(Instr::Drop(reg));
-		}
+		self.compile_block(block, BlockType::FunctionMain)?;
 		
 		Ok(self.func)
 	}

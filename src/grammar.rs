@@ -53,6 +53,7 @@ peg::parser! {
 			/ "break" c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
 			/ "continue" c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }
 			/ "return" wb() e:pexpr()? { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
+			/ "log" wb() _ e:pexpr() { Statement::Log(e) } // Temporary
 			/ l:lexpr() _ "=" _ e:expr() { Statement::Set(l, e) }
 			/ e:expr() { Statement::ExprStat(e) }
 		rule else_if() -> (Expr, Block) = "else" __ "if" wb() c:pexpr() _ t:block() _ { (c,t) }
