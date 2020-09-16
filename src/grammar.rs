@@ -46,9 +46,9 @@ peg::parser! {
 					/ f:fn_def() { f }
 				) { Statement::Let(l, e) }
 			/ "if" _ c:pexpr() _ t:block() _ ei:else_if()* e:else_()? "end" wb() { Statement::If(c,t,ei,e) }
-			/ "while" _ c:pexpr() b:block() "end" wb() { Statement::While(c, b) }
-			/ "do" wb() _ b:block() "while" c:pexpr() { Statement::DoWhile(b, c) }
-			/ "loop" wb() _ b:block() "end" wb() { Statement::Loop(b) }
+			/ "while" _ c:pexpr() _ b:block() _ "end" wb() { Statement::While(c, b) }
+			/ "do" wb() _ b:block() _ "while" c:pexpr() { Statement::DoWhile(b, c) }
+			/ "loop" wb() _ b:block() _ "end" wb() { Statement::Loop(b) }
 			/ "for" "(" _ i:id() _ ":" _ e:expr() _ ")" _ b:block() "end" wb() { Statement::For(i,e,b) }
 			/ "break" c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
 			/ "continue" c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }

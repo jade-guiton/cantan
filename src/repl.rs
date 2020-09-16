@@ -8,7 +8,6 @@ use crate::grammar::parse_partial_stat;
 use crate::vm::Vm;
 use crate::print_err;
 
-const BRIGHT_RED: &str = "\u{001b}[31;1m";
 const BRIGHT_WHITE: &str = "\u{001b}[37;1m";
 const RESET: &str = "\u{001b}[0m";
 
@@ -76,17 +75,20 @@ impl Repl {
 		}
 	}
 	
-	fn run_stat(&mut self, stat: Statement) {
-		let mut pop_log = false;
+	fn compile_stat(&mut self, stat: Statement) -> Result<(), String> {
 		if let Statement::ExprStat(expr) = stat {
-			if let Err(err) = self.func_ctx.compile_expression(expr) {
-				print_err(&err);
-				return;
-			} else {
-				pop_log = true;
-			}
-		} else if let Err(err) = self.func_ctx.compile_statement(stat) {
-			println!("{}{}{}", BRIGHT_RED, err, RESET);
+			self.func_ctx.compile_expression(expr)
+				.map(|()| self.func_ctx.pop_log())
+		} else {
+			self.func_ctx.compile_statement(stat)
+		}
+	}
+	
+	fn run_stat(&mut self, stat: Statement) {
+		let old_ctx = self.func_ctx.clone();
+		if let Err(err) = self.compile_stat(stat) {
+			print_err(&err);
+			self.func_ctx = old_ctx; // Roll back compiler state
 			return;
 		}
 		
@@ -98,18 +100,9 @@ impl Repl {
 		
 		if let Err(err) = self.vm.execute_code(&self.func_ctx.func, self.code_idx..code_end) {
 			print_err(&err);
-			self.code_idx = code_end;
-			return;
 		}
 		
 		self.code_idx = code_end;
-		
-		if pop_log {
-			match self.vm.pop_log() {
-				Ok(s) => println!("{}", s),
-				Err(err) => print_err(&err),
-			}
-		}
 	}
 
 	pub fn start(&mut self) {

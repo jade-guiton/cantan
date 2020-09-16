@@ -46,7 +46,10 @@ impl<'gc> VmState<'gc> {
 		let mut idx = range.start;
 		
 		while idx < range.end {
+			
 			let instr = &func.code[idx];
+			let mut jumped = false;
+			
 			match instr {
 				Instr::Load(reg) => {
 					let reg = *reg as usize;
@@ -65,12 +68,16 @@ impl<'gc> VmState<'gc> {
 				Instr::Discard => {
 					self.pop()?;
 				},
+				Instr::Log => {
+					println!("{}", self.pop()?.repr());
+				},
 				Instr::Jump(rel) => {
 					if *rel <= 0 {
-						idx -= (-rel + 1) as usize;
+						idx -= -rel as usize;
 					} else {
-						idx += (rel - 1) as usize;
+						idx += *rel as usize;
 					}
+					jumped = true;
 				},
 				Instr::Constant(idx) => {
 					self.stack.push(self.get_cst(func, *idx)?);
@@ -122,9 +129,9 @@ impl<'gc> VmState<'gc> {
 							let a = a.get_int().unwrap();
 							let b = b.get_int().unwrap();
 							let c = match op {
-								BinaryOp::Plus => a + b,
-								BinaryOp::Minus => a - b,
-								BinaryOp::Times => a * b,
+								BinaryOp::Plus => a.checked_add(b).ok_or_else(|| String::from("Integer overflow"))?,
+								BinaryOp::Minus => a.checked_sub(b).ok_or_else(|| String::from("Integer overflow"))?,
+								BinaryOp::Times => a.checked_mul(b).ok_or_else(|| String::from("Integer overflow"))?,
 								BinaryOp::Modulo => a.checked_rem_euclid(b).ok_or_else(|| String::from("Division by zero"))?,
 								_ => unreachable!(),
 							};
@@ -141,11 +148,7 @@ impl<'gc> VmState<'gc> {
 								BinaryOp::Times => Primitive::from_float(a * b)?,
 								BinaryOp::Divides => {
 									let c = a / b;
-									if c.is_finite() {
-										Primitive::from_float(c)?
-									} else {
-										return Err(String::from("Division by zero"));
-									}
+									Primitive::from_float(c)?
 								},
 								BinaryOp::IntDivides => {
 									if b == 0.0 {
@@ -182,7 +185,9 @@ impl<'gc> VmState<'gc> {
 				_ => { todo!() },
 			}
 			
-			idx += 1;
+			if !jumped {
+				idx += 1;
+			}
 		}
 		Ok(())
 	}
@@ -203,13 +208,6 @@ impl Vm {
 			arena: VmArena::new(gc_arena::ArenaParameters::default(),
 				|ctx| GcCell::allocate(ctx, VmState::new())),
 		}
-	}
-	
-	pub fn pop_log(&mut self) -> Result<String, String> {
-		self.arena.mutate(|ctx, state| {
-			let val = state.write(ctx).pop()?;
-			Ok(val.repr())
-		})
 	}
 	
 	pub fn execute_code(&mut self, func: &CompiledFunction, code: Range<usize>) -> Result<(), String> {

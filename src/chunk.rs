@@ -9,6 +9,7 @@ pub enum Instr {
 	Store(u16), // Stack top → Reg
 	Drop(u16), // Drop reg
 	Discard, // Discard stack top
+	Log, // Pop and log stack top (used in REPL)
 	
 	// Control flow
 	Jump(i16), // Relative jump
@@ -37,7 +38,7 @@ pub enum Instr {
 	Next(u16), // next(reg) → stack with reg iterator
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CompiledFunction {
 	pub child_func: Vec<CompiledFunction>,
 	pub arg_cnt: u16,

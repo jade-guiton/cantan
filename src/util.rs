@@ -2,6 +2,7 @@ use std::ops;
 
 use num_traits::PrimInt;
 
+#[derive(Clone)]
 pub struct IntSet<T> {
 	ranges: Vec<ops::Range<T>>
 }

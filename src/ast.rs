@@ -11,8 +11,11 @@ pub enum Primitive {
 
 impl Primitive {
 	pub fn from_float(f: f64) -> Result<Self, String> {
-		let not_nan = NotNan::new(f).map_err(|_| "NaN is not allowed")?;
-		Ok(Primitive::Float(not_nan))
+		if f.is_finite() {
+			Ok(Primitive::Float(NotNan::new(f).unwrap()))
+		} else {
+			Err(String::from("Float operation had Infinite or NaN result"))
+		}
 	}
 }
 
