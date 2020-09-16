@@ -96,13 +96,11 @@ impl Repl {
 			println!(": {:?}", &self.func_ctx.func.code[self.code_idx..code_end]);
 		}
 		
-		for i in self.code_idx..code_end {
-			if let Err(err) = self.vm.execute_instr(&self.func_ctx.func, i) {
-				print_err(&err);
-				self.code_idx = code_end;
-				return;
-			}
-		};
+		if let Err(err) = self.vm.execute_code(&self.func_ctx.func, self.code_idx..code_end) {
+			print_err(&err);
+			self.code_idx = code_end;
+			return;
+		}
 		
 		self.code_idx = code_end;
 		
