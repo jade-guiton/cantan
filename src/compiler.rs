@@ -113,7 +113,7 @@ impl FunctionContext {
 				self.stack_size -= len as usize;
 				self.stack_size += 1;
 			},
-			Expr::Fn(arg_names, block) => {
+			Expr::Function(arg_names, block) => {
 				let idx = u16::try_from(self.func.child_funcs.len())
 					.map_err(|_| String::from("Too many functions"))?;
 				let func = FunctionContext::new(arg_names)?
@@ -145,6 +145,16 @@ impl FunctionContext {
 						self.func.code.push(Instr::Prop(cst_idx));
 					},
 				}
+			},
+			Expr::Call(func, args) => {
+				let arg_cnt = u16::try_from(args.len())
+					.map_err(|_| String::from("Too many arguments in function call"))?;
+				self.compile_expression(*func)?;
+				for arg in args {
+					self.compile_expression(arg)?;
+				}
+				self.func.code.push(Instr::Call(arg_cnt));
+				self.stack_size -= arg_cnt as usize;
 			},
 			Expr::Unary(op, expr) => {
 				self.compile_expression(*expr)?;
@@ -260,6 +270,11 @@ impl FunctionContext {
 					return Err(format!("Cannot break {} loops", loops));
 				}
 			},
+			Statement::Return(expr) => {
+				self.compile_expression(expr)?;
+				self.func.code.push(Instr::Return);
+				self.stack_size -= 1;
+			}
 			Statement::Log(expr) => { // Temporary
 				self.compile_expression(expr)?;
 				self.func.code.push(Instr::Log);

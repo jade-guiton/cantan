@@ -24,7 +24,7 @@ pub enum Instr {
 	
 	// Functions
 	NewFunction(u16), // Instantiate function by index
-	Call, // Call function with arguments, all on stack
+	Call(u16), // Call function with N arguments, all on stack
 	Return, // Return with stack top
 	
 	// Values

@@ -72,7 +72,7 @@ pub enum Expr {
 	List(Vec<Expr>),
 	Map(Vec<(Expr, Expr)>),
 	Object(Vec<(String, Expr)>),
-	Fn(Vec<String>, Block),
+	Function(Vec<String>, Block),
 	LExpr(LExpr),
 	SelfRef,
 	Call(Box<Expr>, Vec<Expr>),

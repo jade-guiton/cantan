@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::rc::Rc;
 
 use rustyline::{Editor, error::ReadlineError};
 
@@ -6,13 +7,13 @@ use crate::ast::Statement;
 use crate::colors::*;
 use crate::compiler::{BlockType, FunctionContext};
 use crate::grammar::parse_partial_stat;
-use crate::vm::Vm;
+use crate::vm::ReplVm;
 use crate::print_err;
 
 pub struct Repl {
 	func_ctx: FunctionContext,
 	code_idx: usize,
-	vm: Vm,
+	vm: ReplVm,
 	show_bytecode: bool,
 	rl: rustyline::Editor<()>,
 }
@@ -24,7 +25,7 @@ impl Repl {
 		Repl {
 			func_ctx,
 			code_idx: 0,
-			vm: Vm::new(),
+			vm: ReplVm::new(),
 			show_bytecode,
 			rl: Editor::<()>::with_config(rustyline::Config::builder()
 				.auto_add_history(true).build()),
@@ -98,7 +99,7 @@ impl Repl {
 			println!(": {:?}", &self.func_ctx.func.code[self.code_idx..code_end]);
 		}
 		
-		if let Err(err) = self.vm.execute_code(&self.func_ctx.func, self.code_idx..code_end) {
+		if let Err(err) = self.vm.execute_from(Rc::new(self.func_ctx.func.clone()), self.code_idx) {
 			print_err(&err);
 		}
 		

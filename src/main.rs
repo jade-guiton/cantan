@@ -14,6 +14,7 @@ mod vm;
 
 
 use std::env;
+use std::rc::Rc;
 
 use cli::{CommandSpec, parse_args};
 use colors::*;
@@ -91,8 +92,7 @@ fn main() {
 				},
 				"run" => {
 					if let Some(prog) = compile(&cmd.file.unwrap()) {
-						let mut vm = vm::Vm::new();
-						if let Err(err) = vm.execute_function(&prog) {
+						if let Err(err) = vm::execute_function(Rc::new(prog)) {
 							print_err(&err);
 						}
 					}
