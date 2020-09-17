@@ -102,6 +102,12 @@ impl<'gc> VmState<'gc> {
 						jump(*rel);
 					}
 				},
+				Instr::NewFunction(func_idx) => {
+					let func2 = func.child_funcs.get(*func_idx as usize)
+						.ok_or_else(|| String::from("Accessing undefined function"))?
+						.clone();
+					self.stack.push(Value::Function(func2));
+				},
 				Instr::Constant(idx) => {
 					self.stack.push(self.get_cst(func, *idx)?);
 				},

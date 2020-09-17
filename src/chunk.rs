@@ -1,4 +1,7 @@
 use std::fmt::Write;
+use std::rc::Rc;
+
+use gc_arena::Collect;
 
 use crate::ast::{UnaryOp, BinaryOp, Primitive};
 use crate::colors::*;
@@ -20,7 +23,7 @@ pub enum Instr {
 	JumpIfNil(i16), // Jump if stack top == nil
 	
 	// Functions
-	NewFn(u16), // Instantiate function by index
+	NewFunction(u16), // Instantiate function by index
 	Call, // Call function with arguments, all on stack
 	Return, // Return with stack top
 	
@@ -63,7 +66,7 @@ impl Instr {
 
 #[derive(Debug, Clone)]
 pub struct CompiledFunction {
-	pub child_func: Vec<CompiledFunction>,
+	pub child_funcs: Vec<Rc<CompiledFunction>>,
 	pub arg_cnt: u16,
 	pub csts: Vec<Primitive>,
 	pub classes: Vec<Vec<String>>,
@@ -73,7 +76,7 @@ pub struct CompiledFunction {
 impl CompiledFunction {
 	pub fn new(arg_cnt: u16) -> Self {
 		CompiledFunction {
-			child_func: vec![],
+			child_funcs: vec![],
 			arg_cnt,
 			csts: vec![],
 			classes: vec![],
@@ -88,8 +91,12 @@ impl CompiledFunction {
 			println!("  {}", instr.color_repr(self));
 		}
 		println!();
-		for child in &self.child_func {
+		for child in &self.child_funcs {
 			child.list();
 		}
 	}
+}
+
+unsafe impl Collect for CompiledFunction {
+	fn needs_trace() -> bool { false }
 }

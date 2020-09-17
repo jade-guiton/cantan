@@ -5,11 +5,13 @@ use std::collections::HashMap;
 use std::cmp::Ordering;
 use std::fmt::Write;
 use std::ops::Deref;
+use std::rc::Rc;
 
 use gc_arena::Gc;
 use ordered_float::NotNan;
 
 use crate::ast::Primitive;
+use crate::chunk::CompiledFunction;
 
 // We need a new type to allow us to override the default
 // Collect implementation on Boxed slices, which currently
@@ -41,11 +43,12 @@ pub enum Value<'gc> {
 	List(Gc<'gc, Vec<Value<'gc>>>),
 	Map(Gc<'gc, HashMap<Value<'gc>, Value<'gc>>>),
 	Object(Gc<'gc, HashMap<String, Value<'gc>>>),
+	Function(Rc<CompiledFunction>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
-	Int, Float, String, Bool, Nil, Tuple, List, Map, Object,
+	Int, Float, String, Bool, Nil, Tuple, List, Map, Object, Function,
 }
 
 impl Value<'_> {
@@ -64,6 +67,7 @@ impl Value<'_> {
 			Value::List(_) => Type::List,
 			Value::Map(_) => Type::Map,
 			Value::Object(_) => Type::Object,
+			Value::Function(_) => Type::Function,
 		}
 	}
 }
@@ -225,6 +229,9 @@ impl<'gc> Value<'gc> {
 				write!(buf, "}}").unwrap();
 				buf
 			},
+			Value::Function(fun) => {
+				format!("<function {:x}>", Rc::as_ptr(fun) as usize)
+			}
 		}
 	}
 	
@@ -287,6 +294,7 @@ impl Hash for Value<'_> {
 			Value::List(list) => Gc::as_ptr(*list).hash(state),
 			Value::Map(map) => Gc::as_ptr(*map).hash(state),
 			Value::Object(obj) => Gc::as_ptr(*obj).hash(state),
+			Value::Function(fun) => Rc::as_ptr(fun).hash(state),
 		}
 	}
 }

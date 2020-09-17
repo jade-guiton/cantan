@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::convert::TryFrom;
+use std::rc::Rc;
 
 use crate::ast::*;
 use crate::chunk::*;
@@ -110,6 +111,15 @@ impl FunctionContext {
 				let idx = u16::try_from(idx).map_err(|_| String::from("Too many object classes"))?;
 				self.func.code.push(Instr::NewObject(idx));
 				self.stack_size -= len as usize;
+				self.stack_size += 1;
+			},
+			Expr::Fn(arg_names, block) => {
+				let idx = u16::try_from(self.func.child_funcs.len())
+					.map_err(|_| String::from("Too many functions"))?;
+				let func = FunctionContext::new(arg_names)?
+					.compile_function(block)?;
+				self.func.child_funcs.push(Rc::new(func));
+				self.func.code.push(Instr::NewFunction(idx));
 				self.stack_size += 1;
 			},
 			Expr::LExpr(lexpr) => {
