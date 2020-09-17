@@ -1,5 +1,7 @@
+use std::fmt::Write;
 
 use crate::ast::{UnaryOp, BinaryOp, Primitive};
+use crate::colors::*;
 
 #[derive(Debug, Clone)]
 #[allow(unused)]
@@ -38,6 +40,27 @@ pub enum Instr {
 	Next(u16), // next(reg) → stack with reg iterator
 }
 
+impl Instr {
+	fn color_repr(&self, func: &CompiledFunction) -> String {
+		let parts: Vec<String> = match self {
+			Instr::Constant(idx) => {
+				let cst = func.csts.get(*idx as usize).expect("Invalid constant in function");
+				vec![String::from("Constant"), format!("#{}", cst.repr())]
+			},
+			_ => {
+				let repr = format!("{:?}", self);
+				repr.strip_suffix(")").unwrap_or(&repr).split('(').map(|s| s.to_string()).collect()
+			},
+		};
+		let mut buf = String::new();
+		write!(buf, "{}{}{}", CYAN, parts[0], RESET).unwrap();
+		if let Some(args) = parts.get(1) {
+			write!(buf, " {}", args).unwrap();
+		}
+		buf
+	}
+}
+
 #[derive(Debug, Clone)]
 pub struct CompiledFunction {
 	pub child_func: Vec<CompiledFunction>,
@@ -55,6 +78,18 @@ impl CompiledFunction {
 			csts: vec![],
 			classes: vec![],
 			code: vec![],
+		}
+	}
+	
+	pub fn list(&self) {
+		println!("{}Function{}({} args, {} constants, {} object classes):{}",
+			BRIGHT_GREEN, BRIGHT_WHITE, self.arg_cnt, self.csts.len(), self.classes.len(), RESET);
+		for instr in &self.code {
+			println!("  {}", instr.color_repr(self));
+		}
+		println!();
+		for child in &self.child_func {
+			child.list();
 		}
 	}
 }

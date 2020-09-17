@@ -9,6 +9,7 @@ use crate::util::IntSet;
 #[derive(Clone)]
 pub struct BlockContext {
 	breakable: bool,
+	breaks: Vec<usize>,
 	locals: HashMap<String, u16>,
 }
 
@@ -221,9 +222,29 @@ impl FunctionContext {
 			}
 			Statement::Loop(block) => {
 				let start = self.func.code.len();
-				self.compile_block(block, BlockType::Breakable)?;
+				let breaks = self.compile_block(block, BlockType::Breakable)?;
 				let jump = self.compute_jump_to(start)?;
 				self.func.code.push(Instr::Jump(jump));
+				for break_idx in breaks {
+					self.func.code[break_idx] = Instr::Jump(
+						self.compute_jump_from(break_idx)?);
+				}
+			},
+			Statement::Break(loops) => {
+				if let Some(block_idx) = self.blocks.iter().enumerate().rev()
+						.filter(|(_,b)| b.breakable).nth(loops as usize - 1).map(|(i,_)| i) {
+					// Drop locals from traversed blocks
+					for block in self.blocks[block_idx..].iter().rev() {
+						for (_, reg) in &block.locals {
+							self.func.code.push(Instr::Drop(*reg));
+						}
+					}
+					let block = &mut self.blocks[block_idx];
+					block.breaks.push(self.func.code.len());
+					self.func.code.push(Instr::Jump(0));
+				} else {
+					return Err(format!("Cannot break {} loops", loops));
+				}
 			},
 			Statement::Log(expr) => { // Temporary
 				self.compile_expression(expr)?;
@@ -246,6 +267,7 @@ impl FunctionContext {
 	pub fn start_block(&mut self, block_type: BlockType) {
 		self.blocks.push(BlockContext {
 			breakable: block_type == BlockType::Breakable,
+			breaks: vec![],
 			locals: HashMap::new()
 		});
 		
@@ -258,21 +280,23 @@ impl FunctionContext {
 		}
 	}
 	
-	fn compile_block(&mut self, block: Block, block_type: BlockType) -> Result<(), String> {
+	// Returns a list of code indices with jumps that should jump out of loop,
+	// in the case of a Breakable block
+	fn compile_block(&mut self, block: Block, block_type: BlockType) -> Result<Vec<usize>, String> {
 		self.start_block(block_type);
 		
 		for stat in block {
 			self.compile_statement(stat)?;
 		}
 		
-		for (_, reg) in self.blocks.last_mut().unwrap().locals.drain() {
+		let mut block = self.blocks.pop().unwrap();
+		
+		for (_, reg) in block.locals.drain() {
 			self.func.code.push(Instr::Drop(reg));
 			self.used_regs.remove(reg);
 		}
 		
-		self.blocks.pop();
-		
-		Ok(())
+		Ok(block.breaks)
 	}
 	
 	pub fn add_log(&mut self) {

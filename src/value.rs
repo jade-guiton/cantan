@@ -2,10 +2,12 @@ use gc_arena::Collect;
 use std::hash::{Hash, Hasher};
 use std::convert::TryFrom;
 use std::collections::HashMap;
+use std::cmp::Ordering;
 use std::fmt::Write;
 use std::ops::Deref;
 
 use gc_arena::Gc;
+use ordered_float::NotNan;
 
 use crate::ast::Primitive;
 
@@ -125,6 +127,40 @@ impl<'gc> Value<'gc> {
 					o1.iter().all(|(k,v)| o2.get(k).map_or(false, |v2| v.struct_eq(v2)))
 				} else { false }
 			_ => false,
+		}
+	}
+	
+	pub fn cmp(&self, other: &Value<'gc>) -> Result<Ordering, String> {
+		match (self, other) {
+			(Value::Primitive(Primitive::Int(i1)), Value::Primitive(Primitive::Int(i2))) =>
+				Ok(i1.cmp(i2)),
+			(Value::Primitive(Primitive::Int(i1)), Value::Primitive(Primitive::Float(f2))) =>
+				Ok(NotNan::new(*i1 as f64).unwrap().cmp(f2)),
+			(Value::Primitive(Primitive::Float(f1)), Value::Primitive(Primitive::Int(i2))) =>
+				Ok(f1.cmp(&NotNan::new(*i2 as f64).unwrap())),
+			(Value::Primitive(Primitive::Float(f1)), Value::Primitive(Primitive::Float(f2))) =>
+				Ok(f1.cmp(f2)),
+			(Value::Primitive(Primitive::String(s1)), Value::Primitive(Primitive::String(s2))) =>
+				Ok(s1.cmp(s2)),
+			(Value::Tuple(t1), Value::Tuple(t2)) => {
+				if t1.len() == t2.len() {
+					let o = t1.iter().zip(t2.iter()).find_map(|(v1,v2)| {
+						let res = v1.cmp(v2);
+						if let Ok(Ordering::Equal) = res {
+							None
+						} else {
+							Some(res)
+						}
+					});
+					match o {
+						Some(res) => res,
+						None => Ok(Ordering::Equal),
+					}
+				} else {
+					Err(format!("Cannot compare {}-tuple and {}-tuple", t1.len(), t2.len()))
+				}
+			}
+			_ => Err(format!("Cannot compare: '{}', '{}'", self.repr(), other.repr()))
 		}
 	}
 	

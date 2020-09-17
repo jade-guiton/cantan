@@ -17,6 +17,16 @@ impl Primitive {
 			Err(String::from("Float operation had Infinite or NaN result"))
 		}
 	}
+	
+	pub fn repr(&self) -> String {
+		match self {
+			Primitive::Int(i) => format!("{:?}", i),
+			Primitive::Float(f) => format!("{:?}", f.into_inner()),
+			Primitive::String(s) => format!("{:?}", s),
+			Primitive::Bool(b) => format!("{:?}", b),
+			Primitive::Nil => String::from("nil"),
+		}
+	}
 }
 
 #[derive(Debug, Clone)]

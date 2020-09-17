@@ -7,7 +7,7 @@ fn get_char(s: &str) -> char {
 	s.chars().next().unwrap()
 }
 
-static RESERVED: [&str; 19] = [
+static RESERVED: [&str; 20] = [
 	"let",
 	"if", "else", "while", "do", "loop", "for", "end",
 	"break", "continue", "return",
@@ -15,6 +15,7 @@ static RESERVED: [&str; 19] = [
 	"not", "and", "or",
 	"nil", "true", "false",
 	"fn",
+	"log",
 ];
 
 pub fn parse(path: &str) -> Result<Block, String> {

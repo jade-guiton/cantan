@@ -3,13 +3,11 @@ use std::io::{self, Write};
 use rustyline::{Editor, error::ReadlineError};
 
 use crate::ast::Statement;
+use crate::colors::*;
 use crate::compiler::{BlockType, FunctionContext};
 use crate::grammar::parse_partial_stat;
 use crate::vm::Vm;
 use crate::print_err;
-
-const BRIGHT_WHITE: &str = "\u{001b}[37;1m";
-const RESET: &str = "\u{001b}[0m";
 
 pub struct Repl {
 	func_ctx: FunctionContext,

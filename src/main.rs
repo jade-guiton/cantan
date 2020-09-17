@@ -2,6 +2,7 @@
 extern crate gc_arena;
 
 mod ast;
+mod colors;
 mod compiler;
 mod chunk;
 mod cli;
@@ -15,10 +16,7 @@ mod vm;
 use std::env;
 
 use cli::{CommandSpec, parse_args};
-
-
-const BRIGHT_RED: &str = "\u{001b}[31;1m";
-const RESET: &str = "\u{001b}[0m";
+use colors::*;
 
 
 const USAGE: &str = "
@@ -84,7 +82,7 @@ fn main() {
 				},
 				"compile" => {
 					if let Some(prog) = compile(&cmd.file.unwrap()) {
-						println!("{:?}", prog);
+						prog.list();
 					}
 				},
 				"repl" => {

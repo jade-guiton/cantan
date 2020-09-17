@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::cmp::Ordering;
 use std::ops::Range;
 
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
@@ -191,7 +192,21 @@ impl<'gc> VmState<'gc> {
 						BinaryOp::Eq => {
 							self.stack.push(Value::Primitive(Primitive::Bool(a.struct_eq(&b))));
 						},
-						_ => { todo!() },
+						BinaryOp::NotEq => {
+							self.stack.push(Value::Primitive(Primitive::Bool(!a.struct_eq(&b))));
+						},
+						BinaryOp::LessEq => {
+							self.stack.push(Value::Primitive(Primitive::Bool(a.cmp(&b)? <= Ordering::Equal)));
+						},
+						BinaryOp::Less => {
+							self.stack.push(Value::Primitive(Primitive::Bool(a.cmp(&b)? < Ordering::Equal)));
+						},
+						BinaryOp::Greater => {
+							self.stack.push(Value::Primitive(Primitive::Bool(a.cmp(&b)? > Ordering::Equal)));
+						},
+						BinaryOp::GreaterEq => {
+							self.stack.push(Value::Primitive(Primitive::Bool(a.cmp(&b)? >= Ordering::Equal)));
+						},
 					}
 				},
 				Instr::Index => {
