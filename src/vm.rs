@@ -4,7 +4,7 @@ use std::ops::Range;
 
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
 
-use crate::ast::{Primitive, BinaryOp};
+use crate::ast::{Primitive, UnaryOp, BinaryOp};
 use crate::chunk::*;
 use crate::value::*;
 
@@ -208,6 +208,27 @@ impl<'gc> VmState<'gc> {
 							self.stack.push(Value::Primitive(Primitive::Bool(a.cmp(&b)? >= Ordering::Equal)));
 						},
 					}
+				},
+				Instr::Unary(op) => {
+					let val = self.pop()?;
+					let res;
+					match op {
+						UnaryOp::Minus => {
+							res = match val {
+								Value::Primitive(Primitive::Int(i)) => Primitive::Int(-i),
+								Value::Primitive(Primitive::Float(f)) => Primitive::Float(-f),
+								_ => return Err(format!("Cannot get opposite of: {}", val.repr())),
+							}
+						},
+						UnaryOp::Not => {
+							if let Value::Primitive(Primitive::Bool(b)) = val {
+								res = Primitive::Bool(!b);
+							} else {
+								return Err(format!("Cannot get logical negation of: {}", val.repr()))
+							}
+						},
+					}
+					self.stack.push(Value::Primitive(res));
 				},
 				Instr::Index => {
 					let idx = self.pop()?;

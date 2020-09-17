@@ -136,6 +136,10 @@ impl FunctionContext {
 					},
 				}
 			},
+			Expr::Unary(op, expr) => {
+				self.compile_expression(*expr)?;
+				self.func.code.push(Instr::Unary(op));
+			},
 			Expr::Binary(op, expr1, expr2) => {
 				self.compile_expression(*expr1)?;
 				self.compile_expression(*expr2)?;
