@@ -11,7 +11,7 @@ use crate::vm::ReplVm;
 use crate::print_err;
 
 pub struct Repl {
-	func_ctx: FunctionContext,
+	func_ctx: FunctionContext<'static>,
 	code_idx: usize,
 	vm: ReplVm,
 	show_bytecode: bool,
@@ -20,7 +20,7 @@ pub struct Repl {
 
 impl Repl {
 	pub fn new(show_bytecode: bool) -> Self {
-		let mut func_ctx = FunctionContext::new(vec![]).unwrap();
+		let mut func_ctx = FunctionContext::new(vec![], None).unwrap();
 		func_ctx.start_block(BlockType::FunctionMain);
 		Repl {
 			func_ctx,

@@ -22,25 +22,73 @@ pub enum BlockType {
 }
 
 #[derive(Clone)]
-pub struct FunctionContext {
+pub struct UpvalueSpec { up: usize, reg: u16 }
+
+#[derive(Clone)]
+pub struct FunctionContext<'a> {
+	parent: Option<&'a FunctionContext<'a>>,
 	pub func: CompiledFunction,
 	arg_names: Vec<String>,
 	used_regs: IntSet<u16>,
 	blocks: Vec<BlockContext>,
+	upvalues: Vec<UpvalueSpec>,
 	stack_size: usize,
 }
 
-impl FunctionContext {
-	pub fn new(arg_names: Vec<String>) -> Result<Self, String> {
+impl<'a> FunctionContext<'a> {
+	pub fn new(arg_names: Vec<String>, parent: Option<&'a FunctionContext<'a>>) -> Result<Self, String> {
 		let arg_cnt = u16::try_from(arg_names.len())
 			.map_err(|_| String::from("Too many arguments in function"))?;
 		Ok(FunctionContext {
+			parent,
 			func: CompiledFunction::new(arg_cnt),
 			arg_names,
 			used_regs: IntSet::new(),
 			blocks: vec![],
+			upvalues: vec![],
 			stack_size: 0,
 		})
+	}
+	
+	fn new_upvalue(&mut self, upv: UpvalueSpec) -> Result<u16, String> {
+		let upv_idx = self.upvalues.len();
+		let upv_idx = u16::try_from(upv_idx)
+			.map_err(|_| String::from("Too many upvalues"))?;
+		self.upvalues.push(upv);
+		Ok(upv_idx)
+	}
+	
+	fn find_upvalue(&mut self, id: &str) -> Result<Option<u16>, String> {
+		if let Some(mut ctx) = self.parent {
+			let mut up = 1;
+			loop {
+				if let Some(reg) = ctx.find_local(id) {
+					let upv = self.new_upvalue(UpvalueSpec { up, reg })?;
+					return Ok(Some(upv));
+				}
+				if let Some(ctx2) = ctx.parent {
+					ctx = ctx2;
+					up += 1;
+				} else {
+					return Ok(None)
+				}
+			}
+		} else {
+			Ok(None)
+		}
+	}
+	
+	fn compile_upvalues(&mut self, func: &mut CompiledFunction, upvalues: Vec<UpvalueSpec>) -> Result<(), String> {
+		for upv in upvalues {
+			let UpvalueSpec { up, reg } = upv;
+			if up == 1 {
+				func.upvalues.push(CompiledUpvalue::Direct(reg));
+			} else {
+				let upv = self.new_upvalue(UpvalueSpec { up: up - 1, reg })?;
+				func.upvalues.push(CompiledUpvalue::Indirect(upv));
+			}
+		}
+		Ok(())
 	}
 	
 	fn find_local(&self, id: &str) -> Option<u16> {
@@ -116,8 +164,9 @@ impl FunctionContext {
 			Expr::Function(arg_names, block) => {
 				let idx = u16::try_from(self.func.child_funcs.len())
 					.map_err(|_| String::from("Too many functions"))?;
-				let func = FunctionContext::new(arg_names)?
+				let (mut func, upvalues) = FunctionContext::new(arg_names, Some(self))?
 					.compile_function(block)?;
+				self.compile_upvalues(&mut func, upvalues)?;
 				self.func.child_funcs.push(Rc::new(func));
 				self.func.code.push(Instr::NewFunction(idx));
 				self.stack_size += 1;
@@ -125,12 +174,14 @@ impl FunctionContext {
 			Expr::LExpr(lexpr) => {
 				match lexpr {
 					LExpr::Id(id) => {
-						match self.find_local(&id) {
-							Some(reg) => {
-								self.func.code.push(Instr::Load(reg));
-								self.stack_size += 1;
-							},
-							None => return Err(format!("Referencing undefined local '{}'", id)),
+						if let Some(reg) = self.find_local(&id) {
+							self.func.code.push(Instr::Load(reg));
+							self.stack_size += 1;
+						} else if let Some(upv) = self.find_upvalue(&id)? {
+							self.func.code.push(Instr::LoadUpv(upv));
+							self.stack_size += 1;
+						} else {
+							return Err(format!("Referencing undefined local '{}'", id));
 						}
 					},
 					LExpr::Index(seq, idx) => {
@@ -166,7 +217,6 @@ impl FunctionContext {
 				self.func.code.push(Instr::Binary(op));
 				self.stack_size -= 1;
 			},
-			_ => { todo!() },
 		}
 		Ok(())
 	}
@@ -211,8 +261,12 @@ impl FunctionContext {
 							self.compile_expression(expr)?;
 							self.func.code.push(Instr::Store(reg));
 							self.stack_size -= 1;
+						} else if let Some(upv) = self.find_upvalue(&id)? {
+							self.compile_expression(expr)?;
+							self.func.code.push(Instr::StoreUpv(upv));
+							self.stack_size -= 1;
 						} else {
-							return Err(format!("Assigning to undefined local '{}'", id));
+							return Err(format!("Referencing undefined local '{}'", id));
 						}
 					},
 					LExpr::Index(coll, idx) => {
@@ -270,10 +324,8 @@ impl FunctionContext {
 				if let Some(block_idx) = self.blocks.iter().enumerate().rev()
 						.filter(|(_,b)| b.breakable).nth(loops as usize - 1).map(|(i,_)| i) {
 					// Drop locals from traversed blocks
-					for block in self.blocks[block_idx..].iter().rev() {
-						for (_, reg) in &block.locals {
-							self.func.code.push(Instr::Drop(*reg));
-						}
+					for block_idx in (block_idx..self.blocks.len()).rev() {
+						self.drop_locals(block_idx, true);
 					}
 					let block = &mut self.blocks[block_idx];
 					block.breaks.push(self.func.code.len());
@@ -284,6 +336,10 @@ impl FunctionContext {
 			},
 			Statement::Return(expr) => {
 				self.compile_expression(expr)?;
+				// Drop all locals
+				for block_idx in (0..self.blocks.len()).rev() {
+					self.drop_locals(block_idx, true);
+				}
 				self.func.code.push(Instr::Return);
 				self.stack_size -= 1;
 			}
@@ -321,6 +377,16 @@ impl FunctionContext {
 		}
 	}
 	
+	// emit_only should be true for instructions that drop locals
+	// before jumping, where we don't want to forget about those
+	// locals in the rest of the code quite yet.
+	fn drop_locals(&mut self, block_idx: usize, emit_only: bool) {
+		for (_, reg) in &self.blocks[block_idx].locals {
+			self.func.code.push(Instr::Drop(*reg));
+			if !emit_only { self.used_regs.remove(*reg); }
+		}
+	}
+	
 	// Returns a list of code indices with jumps that should jump out of loop,
 	// in the case of a Breakable block
 	fn compile_block(&mut self, block: Block, block_type: BlockType) -> Result<Vec<usize>, String> {
@@ -330,13 +396,9 @@ impl FunctionContext {
 			self.compile_statement(stat)?;
 		}
 		
-		let mut block = self.blocks.pop().unwrap();
+		self.drop_locals(self.blocks.len() - 1, false);
 		
-		for (_, reg) in block.locals.drain() {
-			self.func.code.push(Instr::Drop(reg));
-			self.used_regs.remove(reg);
-		}
-		
+		let block = self.blocks.pop().unwrap();
 		Ok(block.breaks)
 	}
 	
@@ -345,13 +407,12 @@ impl FunctionContext {
 		self.stack_size -= 1;
 	}
 	
-	pub fn compile_function(mut self, block: Block) -> Result<CompiledFunction, String> {
+	pub fn compile_function(mut self, block: Block) -> Result<(CompiledFunction, Vec<UpvalueSpec>), String> {
 		self.compile_block(block, BlockType::FunctionMain)?;
-		
-		Ok(self.func)
+		Ok((self.func, self.upvalues))
 	}
 }
 
 pub fn compile_program(prog: Block) -> Result<CompiledFunction, String> {
-	FunctionContext::new(vec![])?.compile_function(prog)
+	Ok(FunctionContext::new(vec![], None)?.compile_function(prog)?.0)
 }

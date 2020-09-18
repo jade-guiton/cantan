@@ -7,11 +7,10 @@ fn get_char(s: &str) -> char {
 	s.chars().next().unwrap()
 }
 
-static RESERVED: [&str; 20] = [
+static RESERVED: [&str; 19] = [
 	"let",
 	"if", "else", "while", "do", "loop", "for", "end",
 	"break", "continue", "return",
-	"self",
 	"not", "and", "or",
 	"nil", "true", "false",
 	"fn",
@@ -53,7 +52,7 @@ peg::parser! {
 			/ "for" "(" _ i:id() _ ":" _ e:expr() _ ")" _ b:block() "end" wb() { Statement::For(i,e,b) }
 			/ "break" c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
 			/ "continue" c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }
-			/ "return" wb() _ e:pexpr()? { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
+			/ "return" wb() _ "(" _ e:expr()? _ ")" { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
 			/ "log" wb() _ e:pexpr() { Statement::Log(e) } // Temporary
 			/ l:lexpr() _ "=" _ e:expr() { Statement::Set(l, e) }
 			/ e:expr() { Statement::ExprStat(e) }
@@ -64,7 +63,7 @@ peg::parser! {
 		#[cache]
 		rule lexpr() -> LExpr
 			= e:expr() {? if let Expr::LExpr(l) = e { Ok(l) } else { Err("lexpr") }  }
-		rule pexpr() -> Expr = "(" e:expr() ")" { e }
+		rule pexpr() -> Expr = "(" _ e:expr() _ ")" { e }
 		rule loop_count() -> u32 = "(" _ i:$(['0'..='9']+) _ ")" { i.parse().unwrap() }
 		#[cache]
 		rule expr() -> Expr = precedence! {
@@ -105,13 +104,12 @@ peg::parser! {
 			"fn" wb() _ f:fn_def() { f }
 			"[" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" { Expr::Tuple(e) }
 			"[|" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" { Expr::List(e) }
-			"[" _ "=" _ "]" { Expr::Map(vec![]) } // Empty map [:]
-			"[" _ e:(map_item() ** (_ "," _)) _ "]" { Expr::Map(e) }
-			"{" _ i:(object_item() ** (_ "," _)) _ "}" { Expr::Object(i) }
+			"[" _ "=" _ "]" { Expr::Map(vec![]) } // Empty map [=]
+			"[" _ e:(map_item() ** (_ "," _)) _ ("," _)? "]" { Expr::Map(e) }
+			"{" _ i:(object_item() ** (_ "," _)) _ ("," _)? "}" { Expr::Object(i) }
 			e:pexpr() { e }
 			"true" wb() { Expr::Primitive(Primitive::Bool(true)) }
 			"false" wb() { Expr::Primitive(Primitive::Bool(false)) }
-			"self" wb() { Expr::SelfRef }
 			"nil" wb() { Expr::Primitive(Primitive::Nil) }
 			s:string() { Expr::Primitive(Primitive::String(s)) }
 			f:float() { Expr::Primitive(Primitive::from_float(f).unwrap()) }

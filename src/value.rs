@@ -7,7 +7,7 @@ use std::fmt::Write;
 use std::ops::Deref;
 use std::rc::Rc;
 
-use gc_arena::{GcCell, MutationContext};
+use gc_arena::{Gc, GcCell, MutationContext};
 use ordered_float::NotNan;
 
 use crate::ast::Primitive;
@@ -35,6 +35,26 @@ unsafe impl Collect for Tuple<'_> {
 	fn needs_trace() -> bool { true }
 }
 
+#[derive(Collect)]
+#[collect(no_drop)]
+pub enum Upvalue<'gc> {
+	Open(usize),
+	Closed(Value<'gc>),
+}
+
+#[derive(Collect)]
+#[collect(no_drop)]
+pub struct Function<'gc> {
+	pub chunk: Rc<CompiledFunction>,
+	pub upvalues: Vec<GcCell<'gc, Upvalue<'gc>>>,
+}
+
+impl<'gc> Function<'gc> {
+	pub fn main(chunk: Rc<CompiledFunction>) -> Self {
+		Function { chunk, upvalues: vec![] }
+	}
+}
+
 #[derive(Clone, Collect)]
 #[collect(no_drop)]
 pub enum Value<'gc> {
@@ -43,7 +63,7 @@ pub enum Value<'gc> {
 	List(GcCell<'gc, Vec<Value<'gc>>>),
 	Map(GcCell<'gc, HashMap<Value<'gc>, Value<'gc>>>),
 	Object(GcCell<'gc, HashMap<String, Value<'gc>>>),
-	Function(Rc<CompiledFunction>),
+	Function(Gc<'gc, Function<'gc>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -239,7 +259,7 @@ impl<'gc> Value<'gc> {
 				buf
 			},
 			Value::Function(fun) => {
-				format!("<function {:x}>", Rc::as_ptr(fun) as usize)
+				format!("<function {:x}>", Gc::as_ptr(*fun) as usize)
 			}
 		}
 	}
@@ -322,6 +342,8 @@ impl<'gc> PartialEq for Value<'gc> {
 			(Value::Tuple(t1), Value::Tuple(t2)) => **t1 == **t2,
 			(Value::List(l1), Value::List(l2)) => l1.as_ptr() == l2.as_ptr(),
 			(Value::Map(m1), Value::Map(m2)) => m1.as_ptr() == m2.as_ptr(),
+			(Value::Object(o1), Value::Object(o2)) => o1.as_ptr() == o2.as_ptr(),
+			(Value::Function(f1), Value::Function(f2)) => Gc::as_ptr(*f1) == Gc::as_ptr(*f2),
 			_ => false,
 		}
 	}
@@ -338,7 +360,7 @@ impl Hash for Value<'_> {
 			Value::List(list) => list.as_ptr().hash(state),
 			Value::Map(map) => map.as_ptr().hash(state),
 			Value::Object(obj) => obj.as_ptr().hash(state),
-			Value::Function(fun) => Rc::as_ptr(fun).hash(state),
+			Value::Function(fun) => Gc::as_ptr(*fun).hash(state),
 		}
 	}
 }

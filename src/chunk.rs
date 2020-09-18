@@ -10,8 +10,10 @@ use crate::colors::*;
 #[allow(unused)]
 pub enum Instr {
 	// Register and stack management
-	Load(u16), // Reg → Stack top
-	Store(u16), // Stack top → Reg
+	Load(u16), // Reg → Stack top
+	LoadUpv(u16), // Upvalue → Stack top
+	Store(u16), // Stack top → Reg
+	StoreUpv(u16), // Stack top → Upvalue
 	Drop(u16), // Drop reg
 	Discard, // Discard stack top
 	Log, // Pop and log stack top (used in REPL)
@@ -65,10 +67,17 @@ impl Instr {
 }
 
 #[derive(Debug, Clone)]
+pub enum CompiledUpvalue {
+	Direct(u16), // Refer to register in parent function
+	Indirect(u16), // Refer to upvalue in parent function
+}
+
+#[derive(Debug, Clone)]
 pub struct CompiledFunction {
 	pub child_funcs: Vec<Rc<CompiledFunction>>,
 	pub arg_cnt: u16,
 	pub csts: Vec<Primitive>,
+	pub upvalues: Vec<CompiledUpvalue>,
 	pub classes: Vec<Vec<String>>,
 	pub code: Vec<Instr>,
 }
@@ -79,6 +88,7 @@ impl CompiledFunction {
 			child_funcs: vec![],
 			arg_cnt,
 			csts: vec![],
+			upvalues: vec![],
 			classes: vec![],
 			code: vec![],
 		}
