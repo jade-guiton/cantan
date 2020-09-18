@@ -36,13 +36,11 @@ pub enum Instr {
 	
 	// Operations
 	Binary(BinaryOp), // Binary operation on stack
-	BinaryOn(BinaryOp, u16), // reg [op]= stack
 	Unary(UnaryOp), // Unary operation on stack
 	Index, // stack[-2] [ stack[-1] ] → stack
 	SetIndex, // stack[-3] [ stack[-2] ] ← stack[-1]
 	Prop(u16), // stack[-1] [ cst(u16) ] → stack
 	SetProp(u16), // stack[-2] [ cst(u16) ] ← stack[-1]
-	Next(u16), // next(reg) → stack with reg iterator
 }
 
 impl Instr {

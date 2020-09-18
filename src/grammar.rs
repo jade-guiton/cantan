@@ -42,10 +42,10 @@ peg::parser! {
 		rule block() -> Block = s:(statement() ** _) { s }
 		pub rule lone_statement() -> Statement = _ s:statement() _ { s }
 		rule statement() -> Statement
-			= "let" wb() _ l:lexpr() _ e:(
+			= "let" wb() _ p:pattern() _ e:(
 					  "=" _ e:expr() { e }
 					/ f:fn_def() { f }
-				) { Statement::Let(l, e) }
+				) { Statement::Let(p, e) }
 			/ "if" _ c:pexpr() _ t:block() _ ei:else_if()* e:else_()? "end" wb() { Statement::If(c,t,ei,e) }
 			/ "while" _ c:pexpr() _ b:block() _ "end" wb() { Statement::While(c, b) }
 			/ "do" wb() _ b:block() _ "while" c:pexpr() { Statement::DoWhile(b, c) }
@@ -59,6 +59,8 @@ peg::parser! {
 			/ e:expr() { Statement::ExprStat(e) }
 		rule else_if() -> (Expr, Block) = "else" __ "if" wb() c:pexpr() _ t:block() _ { (c,t) }
 		rule else_() -> Block = "else" wb() _ b:block() _ { b }
+		rule pattern() -> Pattern
+			= i:id() { Pattern::Id(i) }
 		#[cache]
 		rule lexpr() -> LExpr
 			= e:expr() {? if let Expr::LExpr(l) = e { Ok(l) } else { Err("lexpr") }  }

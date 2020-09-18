@@ -9,6 +9,10 @@ pub enum Primitive {
 	Nil,
 }
 
+unsafe impl gc_arena::Collect for Primitive {
+	fn needs_trace() -> bool { false }
+}
+
 impl Primitive {
 	pub fn from_float(f: f64) -> Result<Self, String> {
 		if f.is_finite() {
@@ -42,12 +46,35 @@ pub enum BinaryOp {
 	And, Or,
 }
 
+#[derive(Debug, Clone)]
+pub enum Pattern {
+	Id(String),
+}
 
-pub type Block = Vec<Statement>;
+#[derive(Debug, Clone)]
+pub enum LExpr {
+	Id(String),
+	Index(Box<Expr>, Box<Expr>),
+	Prop(Box<Expr>, String),
+}
+
+#[derive(Debug, Clone)]
+pub enum Expr {
+	Primitive(Primitive),
+	Tuple(Vec<Expr>),
+	List(Vec<Expr>),
+	Map(Vec<(Expr, Expr)>),
+	Object(Vec<(String, Expr)>),
+	Function(Vec<String>, Block),
+	LExpr(LExpr),
+	Call(Box<Expr>, Vec<Expr>),
+	Unary(UnaryOp, Box<Expr>),
+	Binary(BinaryOp, Box<Expr>, Box<Expr>),
+}
 
 #[derive(Debug, Clone)]
 pub enum Statement {
-	Let(LExpr, Expr),
+	Let(Pattern, Expr),
 	Set(LExpr, Expr),
 	If(Expr, Block, Vec<(Expr, Block)>, Option<Block>),
 	While(Expr, Block),
@@ -61,28 +88,4 @@ pub enum Statement {
 	ExprStat(Expr),
 }
 
-unsafe impl gc_arena::Collect for Primitive {
-	fn needs_trace() -> bool { false }
-}
-
-#[derive(Debug, Clone)]
-pub enum Expr {
-	Primitive(Primitive),
-	Tuple(Vec<Expr>),
-	List(Vec<Expr>),
-	Map(Vec<(Expr, Expr)>),
-	Object(Vec<(String, Expr)>),
-	Function(Vec<String>, Block),
-	LExpr(LExpr),
-	SelfRef,
-	Call(Box<Expr>, Vec<Expr>),
-	Unary(UnaryOp, Box<Expr>),
-	Binary(BinaryOp, Box<Expr>, Box<Expr>),
-}
-
-#[derive(Debug, Clone)]
-pub enum LExpr {
-	Id(String),
-	Index(Box<Expr>, Box<Expr>),
-	Prop(Box<Expr>, String),
-}
+pub type Block = Vec<Statement>;

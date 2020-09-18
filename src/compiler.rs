@@ -182,9 +182,9 @@ impl FunctionContext {
 
 	pub fn compile_statement(&mut self, stat: Statement) -> Result<(), String> {
 		match stat {
-			Statement::Let(lexpr, expr) => {
-				match lexpr {
-					LExpr::Id(id) => {
+			Statement::Let(pat, expr) => {
+				match pat {
+					Pattern::Id(id) => {
 						let reg = {
 							if let Some(reg) = self.blocks.last_mut().unwrap().locals.get(&id).copied() { // Shadowing previous binding
 								self.func.code.push(Instr::Drop(reg));
@@ -202,7 +202,6 @@ impl FunctionContext {
 						self.func.code.push(Instr::Store(reg));
 						self.stack_size -= 1;
 					},
-					_ => { todo!() },
 				}
 			},
 			Statement::Set(lexpr, expr) => {
