@@ -61,9 +61,7 @@ peg::parser! {
 		rule else_() -> Block = "else" wb() _ b:block() _ { b }
 		#[cache]
 		rule lexpr() -> LExpr
-			= i:id() { LExpr::Id(i) }
-			/ e:expr() _ "[" _ k:expr() _ "]" { LExpr::Index(Box::new(e), Box::new(k)) }
-			/ e:expr() _ "." i:id() { LExpr::Prop(Box::new(e), i) }
+			= e:expr() {? if let Expr::LExpr(l) = e { Ok(l) } else { Err("lexpr") }  }
 		rule pexpr() -> Expr = "(" e:expr() ")" { e }
 		rule loop_count() -> u32 = "(" _ i:$(['0'..='9']+) _ ")" { i.parse().unwrap() }
 		#[cache]
@@ -101,7 +99,6 @@ peg::parser! {
 			t:@ ___ "[" _ k:expr() _ "]" { Expr::LExpr(LExpr::Index(Box::new(t), Box::new(k))) }
 			o:@ _ "." i:id() { Expr::LExpr(LExpr::Prop(Box::new(o), i)) }
 			f:@ ___ "(" _ a:(expr() ** (_ "," _)) _ ("," _)? ")" { Expr::Call(Box::new(f), a) }
-			e:pexpr() { e }
 			--
 			"fn" wb() _ f:fn_def() { f }
 			"[" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" { Expr::Tuple(e) }
@@ -109,7 +106,7 @@ peg::parser! {
 			"[" _ "=" _ "]" { Expr::Map(vec![]) } // Empty map [:]
 			"[" _ e:(map_item() ** (_ "," _)) _ "]" { Expr::Map(e) }
 			"{" _ i:(object_item() ** (_ "," _)) _ "}" { Expr::Object(i) }
-			i:id() { Expr::LExpr(LExpr::Id(i)) }
+			e:pexpr() { e }
 			"true" wb() { Expr::Primitive(Primitive::Bool(true)) }
 			"false" wb() { Expr::Primitive(Primitive::Bool(false)) }
 			"self" wb() { Expr::SelfRef }
@@ -117,6 +114,7 @@ peg::parser! {
 			s:string() { Expr::Primitive(Primitive::String(s)) }
 			f:float() { Expr::Primitive(Primitive::from_float(f).unwrap()) }
 			i:int() { Expr::Primitive(Primitive::Int(i)) }
+			i:id() { Expr::LExpr(LExpr::Id(i)) }
 		}
 		rule map_item() -> (Expr, Expr)
 			= k:expr() _ "=" _ v:expr() { (k, v) }
@@ -144,6 +142,7 @@ peg::parser! {
 		rule string() -> String
 			= "\"" c:string_char()* "\"" { c.into_iter().collect() }
 		
+		#[cache]
 		rule _() = quiet!{[' '|'\t'|'\n']*}
 		rule __() = quiet!{[' '|'\t'|'\n']+}
 		rule ___() = quiet!{[' '|'\t']*}

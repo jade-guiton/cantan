@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::cmp::Ordering;
 use std::rc::Rc;
 
-use gc_arena::{Collect, Gc, GcCell, MutationContext};
+use gc_arena::{Collect, GcCell, MutationContext};
 
 use crate::ast::{Primitive, UnaryOp, BinaryOp};
 use crate::chunk::*;
@@ -99,7 +99,7 @@ impl<'gc> VmState<'gc> {
 	}
 	
 	// Warning: does not reset state on errors; callers should not reuse state after error
-	fn execute_instr(&mut self, ctx: MutationContext<'gc, '_>) -> Result<(), String> {
+	fn execute_instr(&mut self, mc: MutationContext<'gc, '_>) -> Result<(), String> {
 		let func = self.calls.last().unwrap().func.clone();
 		let instr = &func.code.get(self.idx)
 			.ok_or_else(|| String::from("Jumped to invalid instruction"))?;
@@ -180,21 +180,21 @@ impl<'gc> VmState<'gc> {
 			},
 			Instr::NewList(cnt) => {
 				let values = self.pop_n(*cnt as usize)?;
-				self.stack.push(Value::List(Gc::allocate(ctx, values)));
+				self.stack.push(Value::List(GcCell::allocate(mc, values)));
 			},
 			Instr::NewMap(cnt) => {
 				let mut values = self.pop_n(2 * (*cnt as usize))?;
 				let (mut keys, mut values): (Vec<(usize,Value)>,Vec<(usize,Value)>) =
 					values.drain(..).enumerate().partition(|(i,_)| i % 2 == 0);
 				let map: HashMap<Value, Value> = keys.drain(..).map(|(_,v)| v).zip(values.drain(..).map(|(_,v)| v)).collect();
-				self.stack.push(Value::Map(Gc::allocate(ctx, map)));
+				self.stack.push(Value::Map(GcCell::allocate(mc, map)));
 			},
 			Instr::NewObject(class_idx) => {
 				let class = func.classes.get(*class_idx as usize).ok_or_else(|| String::from("Using undefined object class"))?;
 				let mut values = self.pop_n(class.len())?;
 				let obj: HashMap<String, Value> = class.iter().cloned()
 					.zip(values.drain(..)).collect();
-				self.stack.push(Value::Object(Gc::allocate(ctx, obj)));
+				self.stack.push(Value::Object(GcCell::allocate(mc, obj)));
 			},
 			Instr::Binary(op) => {
 				let b = self.pop()?;
@@ -303,10 +303,22 @@ impl<'gc> VmState<'gc> {
 				let coll = self.pop()?;
 				self.stack.push(coll.index(&idx)?);
 			},
+			Instr::SetIndex => {
+				let val = self.pop()?;
+				let idx = self.pop()?;
+				let coll = self.pop()?;
+				coll.set_index(&idx, val, mc)?;
+			},
 			Instr::Prop(cst_idx) => {
 				let obj = self.pop()?;
 				let idx = self.get_cst(&func, *cst_idx)?.get_string()?;
 				self.stack.push(obj.prop(&idx)?);
+			},
+			Instr::SetProp(cst_idx) => {
+				let val = self.pop()?;
+				let obj = self.pop()?;
+				let idx = self.get_cst(&func, *cst_idx)?.get_string()?;
+				obj.set_prop(&idx, val, mc)?;
 			},
 			_ => { todo!() },
 		}
@@ -325,8 +337,8 @@ impl<'gc> VmState<'gc> {
 	
 	// Like execute_instr, but clears calls and the stack on errors (not registers)
 	// Using this, VmState can be reused in interactive mode even on error
-	fn execute_instr_safe(&mut self, ctx: MutationContext<'gc, '_>) -> Result<(), String> {
-		match self.execute_instr(ctx) {
+	fn execute_instr_safe(&mut self, mc: MutationContext<'gc, '_>) -> Result<(), String> {
+		match self.execute_instr(mc) {
 			Ok(()) => Ok(()),
 			Err(err) => {
 				self.calls.clear();
@@ -370,7 +382,7 @@ impl<'gc> VmState<'gc> {
 
 fn new_arena() -> VmArena {
 	VmArena::new(gc_arena::ArenaParameters::default(),
-		|ctx| GcCell::allocate(ctx, VmState::new()))
+		|mc| GcCell::allocate(mc, VmState::new()))
 }
 
 pub struct ReplVm {
@@ -383,11 +395,11 @@ impl ReplVm {
 	}
 	
 	pub fn execute_from(&mut self, func: Rc<CompiledFunction>, from: usize) -> Result<(), String>  {
-		self.arena.mutate(|ctx, state| {
-			state.write(ctx).run_interactive(func, from);
+		self.arena.mutate(|mc, state| {
+			state.write(mc).run_interactive(func, from);
 		});
 		while self.arena.root.read().has_call() {
-			self.arena.mutate(|ctx, state| state.write(ctx).execute_instr_safe(ctx))?
+			self.arena.mutate(|mc, state| state.write(mc).execute_instr_safe(mc))?
 		}
 		Ok(())
 	}
@@ -395,11 +407,11 @@ impl ReplVm {
 
 pub fn execute_function(func: Rc<CompiledFunction>) -> Result<(), String>  {
 	let mut arena = new_arena();
-	arena.mutate(|ctx, state| {
-		state.write(ctx).call_function(func, vec![]);
+	arena.mutate(|mc, state| {
+		state.write(mc).call_function(func, vec![]);
 	});
 	while arena.root.read().has_call() {
-		arena.mutate(|ctx, state| state.write(ctx).execute_instr(ctx))?;
+		arena.mutate(|mc, state| state.write(mc).execute_instr(mc))?;
 	}
 	Ok(())
 }

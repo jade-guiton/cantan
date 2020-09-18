@@ -7,7 +7,7 @@ use std::fmt::Write;
 use std::ops::Deref;
 use std::rc::Rc;
 
-use gc_arena::Gc;
+use gc_arena::{GcCell, MutationContext};
 use ordered_float::NotNan;
 
 use crate::ast::Primitive;
@@ -40,9 +40,9 @@ unsafe impl Collect for Tuple<'_> {
 pub enum Value<'gc> {
 	Primitive(Primitive),
 	Tuple(Tuple<'gc>),
-	List(Gc<'gc, Vec<Value<'gc>>>),
-	Map(Gc<'gc, HashMap<Value<'gc>, Value<'gc>>>),
-	Object(Gc<'gc, HashMap<String, Value<'gc>>>),
+	List(GcCell<'gc, Vec<Value<'gc>>>),
+	Map(GcCell<'gc, HashMap<Value<'gc>, Value<'gc>>>),
+	Object(GcCell<'gc, HashMap<String, Value<'gc>>>),
 	Function(Rc<CompiledFunction>),
 }
 
@@ -118,18 +118,24 @@ impl<'gc> Value<'gc> {
 				if t1.len() == t2.len() {
 					t1.iter().zip(t2.deref()).all(|(a,b)| a.struct_eq(b))
 				} else { false },
-			(Value::List(l1), Value::List(l2)) =>
+			(Value::List(l1), Value::List(l2)) => {
+				let (l1, l2) = (l1.read(), l2.read());
 				if l1.len() == l2.len() {
 					l1.iter().zip(l2.deref()).all(|(a,b)| a.struct_eq(b))
-				} else { false },
-			(Value::Map(m1), Value::Map(m2)) => // Memory equality for keys, structural for values
+				} else { false }
+			},
+			(Value::Map(m1), Value::Map(m2)) => { // Memory equality for keys, structural for values
+				let (m1, m2) = (m1.read(), m2.read());
 				if m1.len() == m2.len() {
 					m1.iter().all(|(k,v)| m2.get(k).map_or(false, |v2| v.struct_eq(v2)))
 				} else { false }
-			(Value::Object(o1), Value::Object(o2)) =>
+			},
+			(Value::Object(o1), Value::Object(o2)) => {
+				let (o1, o2) = (o1.read(), o2.read());
 				if o1.len() == o2.len() {
 					o1.iter().all(|(k,v)| o2.get(k).map_or(false, |v2| v.struct_eq(v2)))
 				} else { false }
+			},
 			_ => false,
 		}
 	}
@@ -190,6 +196,7 @@ impl<'gc> Value<'gc> {
 				buf
 			},
 			Value::List(list) => {
+				let list = list.read();
 				let mut buf = String::new();
 				write!(buf, "[|").unwrap();
 				for (idx, val) in list.iter().enumerate() {
@@ -202,6 +209,7 @@ impl<'gc> Value<'gc> {
 				buf
 			},
 			Value::Map(map) => {
+				let map = map.read();
 				let mut buf = String::new();
 				write!(buf, "[").unwrap();
 				if map.len() == 0 {
@@ -218,6 +226,7 @@ impl<'gc> Value<'gc> {
 				buf
 			},
 			Value::Object(obj) => {
+				let obj = obj.read();
 				let mut buf = String::new();
 				write!(buf, "{{").unwrap();
 				for (idx, (key, val)) in obj.iter().enumerate() {
@@ -235,31 +244,66 @@ impl<'gc> Value<'gc> {
 		}
 	}
 	
-	pub fn index(&self, other: &Value<'gc>) -> Result<Value<'gc>, String> {
+	pub fn index(&self, idx: &Value<'gc>) -> Result<Value<'gc>, String> {
 		match self {
 			Value::Tuple(tuple) => {
-				let idx = other.get_int()?;
+				let idx = idx.get_int()?;
 				usize::try_from(idx).ok().and_then(|idx| tuple.get(idx)).cloned()
 					.ok_or_else(|| format!("Trying to index {}-tuple with: {}", tuple.len(), idx))
 			},
 			Value::List(list) => {
-				let idx = other.get_int()?;
+				let list = list.read();
+				let idx = idx.get_int()?;
 				usize::try_from(idx).ok().and_then(|idx| list.get(idx)).cloned()
 					.ok_or_else(|| format!("Trying to index list of length {} with: {}", list.len(), idx))
 			},
 			Value::Map(map) => {
-				Ok(map.get(other).ok_or_else(|| format!("Map does not contain key: {}", other.repr()))?.clone())
+				Ok(map.read().get(idx).ok_or_else(|| format!("Map does not contain key: {}", idx.repr()))?.clone())
 			},
 			_ => {
-				Err(format!("{:?} cannot be indexed", self.get_type()))
+				Err(format!("Cannot get index from {:?}", self.get_type()))
 			}
 		}
+	}
+	
+	pub fn set_index(&self, idx: &Value<'gc>, val: Value<'gc>, mc: MutationContext<'gc, '_>) -> Result<(), String> {
+		match self {
+			Value::List(list) => {
+				let mut list = list.write(mc);
+				let idx = idx.get_int()?;
+				let len = list.len();
+				let slot = usize::try_from(idx).ok().and_then(|idx| list.get_mut(idx))
+					.ok_or_else(|| format!("Trying to index list of length {} with: {}", len, idx))?;
+				*slot = val;
+			},
+			Value::Map(map) => {
+				let mut map = map.write(mc);
+				let slot = map.get_mut(idx).ok_or_else(|| format!("Map does not contain key: {}", idx.repr()))?;
+				*slot = val;
+			},
+			_ => return Err(format!("Cannot set index in {:?}", self.get_type())),
+		}
+		Ok(())
 	}
 	
 	pub fn prop(&self, prop: &str) -> Result<Value<'gc>, String> {
 		match self {
 			Value::Object(obj) => {
-				Ok(obj.get(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?.clone())
+				Ok(obj.read().get(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?.clone())
+			},
+			_ => {
+				Err(format!("Cannot get prop of {:?}", self.get_type()))
+			}
+		}
+	}
+	
+	pub fn set_prop(&self, prop: &str, val: Value<'gc>, mc: MutationContext<'gc, '_>) -> Result<(), String> {
+		match self {
+			Value::Object(obj) => {
+				let mut obj = obj.write(mc);
+				let slot = obj.get_mut(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?;
+				*slot = val;
+				Ok(())
 			},
 			_ => {
 				Err(format!("Cannot get prop of {:?}", self.get_type()))
@@ -276,8 +320,8 @@ impl<'gc> PartialEq for Value<'gc> {
 		match (self, other) {
 			(Value::Primitive(p1), Value::Primitive(p2)) => p1 == p2,
 			(Value::Tuple(t1), Value::Tuple(t2)) => **t1 == **t2,
-			(Value::List(l1), Value::List(l2)) => Gc::as_ptr(*l1) == Gc::as_ptr(*l2),
-			(Value::Map(m1), Value::Map(m2)) => Gc::as_ptr(*m1) == Gc::as_ptr(*m2),
+			(Value::List(l1), Value::List(l2)) => l1.as_ptr() == l2.as_ptr(),
+			(Value::Map(m1), Value::Map(m2)) => m1.as_ptr() == m2.as_ptr(),
 			_ => false,
 		}
 	}
@@ -291,9 +335,9 @@ impl Hash for Value<'_> {
 		match self {
 			Value::Primitive(prim) => prim.hash(state),
 			Value::Tuple(values) => values.hash(state),
-			Value::List(list) => Gc::as_ptr(*list).hash(state),
-			Value::Map(map) => Gc::as_ptr(*map).hash(state),
-			Value::Object(obj) => Gc::as_ptr(*obj).hash(state),
+			Value::List(list) => list.as_ptr().hash(state),
+			Value::Map(map) => map.as_ptr().hash(state),
+			Value::Object(obj) => obj.as_ptr().hash(state),
 			Value::Function(fun) => Rc::as_ptr(fun).hash(state),
 		}
 	}

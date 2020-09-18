@@ -206,17 +206,30 @@ impl FunctionContext {
 				}
 			},
 			Statement::Set(lexpr, expr) => {
-				self.compile_expression(expr)?;
 				match lexpr {
 					LExpr::Id(id) => {
 						if let Some(reg) = self.find_local(&id) {
+							self.compile_expression(expr)?;
 							self.func.code.push(Instr::Store(reg));
 							self.stack_size -= 1;
 						} else {
 							return Err(format!("Assigning to undefined local '{}'", id));
 						}
 					},
-					_ => { todo!() },
+					LExpr::Index(coll, idx) => {
+						self.compile_expression(*coll)?;
+						self.compile_expression(*idx)?;
+						self.compile_expression(expr)?;
+						self.func.code.push(Instr::SetIndex);
+						self.stack_size -= 3;
+					},
+					LExpr::Prop(obj, prop) => {
+						self.compile_expression(*obj)?;
+						let cst_idx = self.add_prim_cst(Primitive::String(prop))?;
+						self.compile_expression(expr)?;
+						self.func.code.push(Instr::SetProp(cst_idx));
+						self.stack_size -= 2;
+					},
 				}
 			},
 			Statement::If(cond, then, elseifs, else_block) => {
