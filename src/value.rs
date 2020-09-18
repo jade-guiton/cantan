@@ -13,23 +13,6 @@ use ordered_float::NotNan;
 use crate::ast::Primitive;
 use crate::chunk::CompiledFunction;
 
-// We need a new type to allow us to override the default
-// Collect implementation on Boxed slices, which currently
-// causes infinite recursion
-#[derive(Clone)]
-pub struct Tuple<'gc>(Box<[Value<'gc>]>);
-
-impl<'gc> Tuple<'gc> {
-	pub fn new(values: Vec<Value<'gc>>) -> Self {
-		Tuple(values.into_boxed_slice())
-	}
-}
-
-impl<'gc> Deref for Tuple<'gc> {
-	type Target = [Value<'gc>];
-	fn deref(&self) -> &[Value<'gc>] { self.0.deref() }
-}
-
 // To resolve infinite recursion from default impl
 unsafe impl Collect for Tuple<'_> {
 	fn needs_trace() -> bool { true }
@@ -55,10 +38,71 @@ impl<'gc> Function<'gc> {
 	}
 }
 
-#[derive(Clone, Collect)]
+// We need a new type to allow us to override the default
+// Collect implementation on Boxed slices, which currently
+// causes infinite recursion
+#[derive(Clone, Debug)]
+pub struct Tuple<'gc>(Box<[Value<'gc>]>);
+
+impl<'gc> Tuple<'gc> {
+	pub fn new(values: Vec<Value<'gc>>) -> Self {
+		Tuple(values.into_boxed_slice())
+	}
+}
+
+impl<'gc> Deref for Tuple<'gc> {
+	type Target = [Value<'gc>];
+	fn deref(&self) -> &[Value<'gc>] { self.0.deref() }
+}
+
+// New type to implement Collect
+#[derive(Clone, Debug)]
+#[repr(transparent)]
+pub struct NiceFloat(pub NotNan<f64>);
+
+impl Deref for NiceFloat {
+	type Target = f64;
+	fn deref(&self) -> &f64 {
+		self.0.deref()
+	}
+}
+
+unsafe impl Collect for NiceFloat {
+	fn needs_trace() -> bool { false }
+}
+
+// New type to implement Collect
+#[derive(Clone, Debug)]
+#[repr(transparent)]
+pub struct NiceStr(pub Box<str>);
+
+impl From<String> for NiceStr {
+	fn from(s: String) -> Self {
+		NiceStr(s.into_boxed_str())
+	}
+}
+
+impl Deref for NiceStr {
+	type Target = str;
+	fn deref(&self) -> &str {
+		self.0.deref()
+	}
+}
+
+unsafe impl Collect for NiceStr {
+	fn needs_trace() -> bool { false }
+}
+
+#[derive(Clone, Debug, Collect)]
 #[collect(no_drop)]
 pub enum Value<'gc> {
-	Primitive(Primitive),
+	// Unpacked Primitive
+	Nil,
+	Bool(bool),
+	Int(i32),
+	Float(NiceFloat),
+	String(NiceStr),
+	
 	Tuple(Tuple<'gc>),
 	List(GcCell<'gc, Vec<Value<'gc>>>),
 	Map(GcCell<'gc, HashMap<Value<'gc>, Value<'gc>>>),
@@ -74,15 +118,12 @@ pub enum Type {
 impl Value<'_> {
 	pub fn get_type(&self) -> Type {
 		match self {
-			Value::Primitive(prim) => {
-				match prim {
-					Primitive::Int(_) => Type::Int,
-					Primitive::Float(_) => Type::Float,
-					Primitive::String(_) => Type::String,
-					Primitive::Bool(_) => Type::Bool,
-					Primitive::Nil => Type::Nil,
-				}
-			},
+			Value::Nil => Type::Nil,
+			Value::Bool(_) => Type::Bool,
+			Value::Int(_) => Type::Int,
+			Value::Float(_) => Type::Float,
+			Value::String(_) => Type::String,
+			
 			Value::Tuple(_) => Type::Tuple,
 			Value::List(_) => Type::List,
 			Value::Map(_) => Type::Map,
@@ -107,7 +148,7 @@ pub fn expected_type<T>(exp: Type, got: &Value) -> Result<T, String> {
 macro_rules! get_prim {
 	($name:ident, $rust_type:ty, $cn_type:ident) => {
 		pub fn $name(&self) -> Result<$rust_type, String> {
-			if let Value::Primitive(Primitive::$cn_type(b)) = self {
+			if let Value::$cn_type(b) = self {
 				Ok(b.clone())
 			} else {
 				expected_type(Type::$cn_type, self)
@@ -119,12 +160,26 @@ macro_rules! get_prim {
 impl<'gc> Value<'gc> {
 	get_prim!(get_bool, bool, Bool);
 	get_prim!(get_int, i32, Int);
-	get_prim!(get_string, String, String);
+	get_prim!(get_string, NiceStr, String);
+	
+	// We can't use .clone() for this, because it keeps lifetimes
+	// intact, and we need to change from 'static to 'gc when
+	// instantiating a constant.
+	pub fn clone_prim<'gc2>(&self) -> Value<'gc2> {
+		match self {
+			Value::Nil => Value::Nil,
+			Value::Bool(b) => Value::Bool(*b),
+			Value::Int(i) => Value::Int(*i),
+			Value::Float(f) => Value::Float(f.clone()),
+			Value::String(s) => Value::String(s.clone()),
+			_ => panic!("Trying to move non-primitive between GCs"),
+		}
+	}
 	
 	pub fn get_numeric(&self) -> Result<f64, String> {
 		match self {
-			Value::Primitive(Primitive::Int(i)) => Ok(*i as f64),
-			Value::Primitive(Primitive::Float(f)) => Ok(**f),
+			Value::Int(i) => Ok(*i as f64),
+			Value::Float(f) => Ok(**f),
 			_ => {
 				expected_types("Int or Float", self)
 			}
@@ -133,7 +188,12 @@ impl<'gc> Value<'gc> {
 	
 	pub fn struct_eq(&self, other: &Value<'gc>) -> bool {
 		match (self, other) {
-			(Value::Primitive(p1), Value::Primitive(p2)) => p1 == p2,
+			(Value::Nil, Value::Nil) => true,
+			(Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
+			(Value::Int(i1), Value::Int(i2)) => i1 == i2,
+			(Value::Float(f1), Value::Float(f2)) => f1.0 == f2.0,
+			(Value::String(s1), Value::String(s2)) => s1.0 == s2.0,
+			
 			(Value::Tuple(t1), Value::Tuple(t2)) =>
 				if t1.len() == t2.len() {
 					t1.iter().zip(t2.deref()).all(|(a,b)| a.struct_eq(b))
@@ -162,16 +222,17 @@ impl<'gc> Value<'gc> {
 	
 	pub fn cmp(&self, other: &Value<'gc>) -> Result<Ordering, String> {
 		match (self, other) {
-			(Value::Primitive(Primitive::Int(i1)), Value::Primitive(Primitive::Int(i2))) =>
+			(Value::Int(i1), Value::Int(i2)) =>
 				Ok(i1.cmp(i2)),
-			(Value::Primitive(Primitive::Int(i1)), Value::Primitive(Primitive::Float(f2))) =>
-				Ok(NotNan::new(*i1 as f64).unwrap().cmp(f2)),
-			(Value::Primitive(Primitive::Float(f1)), Value::Primitive(Primitive::Int(i2))) =>
-				Ok(f1.cmp(&NotNan::new(*i2 as f64).unwrap())),
-			(Value::Primitive(Primitive::Float(f1)), Value::Primitive(Primitive::Float(f2))) =>
-				Ok(f1.cmp(f2)),
-			(Value::Primitive(Primitive::String(s1)), Value::Primitive(Primitive::String(s2))) =>
+			(Value::Int(i1), Value::Float(f2)) =>
+				Ok(NotNan::new(*i1 as f64).unwrap().cmp(&f2.0)),
+			(Value::Float(f1), Value::Int(i2)) =>
+				Ok(f1.0.cmp(&NotNan::new(*i2 as f64).unwrap())),
+			(Value::Float(f1), Value::Float(f2)) =>
+				Ok(f1.0.cmp(&f2.0)),
+			(Value::String(s1), Value::String(s2)) =>
 				Ok(s1.cmp(s2)),
+			
 			(Value::Tuple(t1), Value::Tuple(t2)) => {
 				if t1.len() == t2.len() {
 					let o = t1.iter().zip(t2.iter()).find_map(|(v1,v2)| {
@@ -196,13 +257,12 @@ impl<'gc> Value<'gc> {
 	
 	pub fn repr(&self) -> String {
 		match self {
-			Value::Primitive(prim) => match prim {
-				Primitive::Int(i) => format!("{}", i),
-				Primitive::Float(f) => format!("{}", f),
-				Primitive::String(s) => format!("{:?}", s),
-				Primitive::Bool(b) => format!("{:?}", b),
-				Primitive::Nil => String::from("nil"),
-			},
+			Value::Nil => String::from("nil"),
+			Value::Bool(b) => format!("{:?}", b),
+			Value::Int(i) => format!("{}", i),
+			Value::Float(f) => format!("{}", f.0),
+			Value::String(s) => format!("{:?}", s.0),
+			
 			Value::Tuple(list) => {
 				let mut buf = String::new();
 				write!(buf, "[").unwrap();
@@ -338,7 +398,12 @@ impl<'gc> Value<'gc> {
 impl<'gc> PartialEq for Value<'gc> {
 	fn eq(&self, other: &Value<'gc>) -> bool {
 		match (self, other) {
-			(Value::Primitive(p1), Value::Primitive(p2)) => p1 == p2,
+			(Value::Nil, Value::Nil) => true,
+			(Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
+			(Value::Int(i1), Value::Int(i2)) => i1 == i2,
+			(Value::Float(f1), Value::Float(f2)) => f1.0 == f2.0,
+			(Value::String(s1), Value::String(s2)) => s1.0 == s2.0,
+			
 			(Value::Tuple(t1), Value::Tuple(t2)) => **t1 == **t2,
 			(Value::List(l1), Value::List(l2)) => l1.as_ptr() == l2.as_ptr(),
 			(Value::Map(m1), Value::Map(m2)) => m1.as_ptr() == m2.as_ptr(),
@@ -355,7 +420,12 @@ impl Hash for Value<'_> {
 	fn hash<H: Hasher>(&self, state: &mut H) {
 		self.get_type().hash(state);
 		match self {
-			Value::Primitive(prim) => prim.hash(state),
+			Value::Nil => {},
+			Value::Bool(b) => b.hash(state),
+			Value::Int(i) => i.hash(state),
+			Value::Float(f) => f.0.hash(state),
+			Value::String(s) => s.0.hash(state),
+			
 			Value::Tuple(values) => values.hash(state),
 			Value::List(list) => list.as_ptr().hash(state),
 			Value::Map(map) => map.as_ptr().hash(state),
@@ -367,6 +437,23 @@ impl Hash for Value<'_> {
 
 impl From<&Primitive> for Value<'_> {
 	fn from(cst: &Primitive) -> Self {
-		Value::Primitive(cst.clone())
+		match cst {
+			Primitive::Nil => Value::Nil,
+			Primitive::Bool(b) => Value::Bool(*b),
+			Primitive::Int(i) => Value::Int(*i),
+			Primitive::Float(f) => Value::Float(NiceFloat(*f)),
+			Primitive::String(s) => Value::String(NiceStr(s.clone())),
+		}
+	}
+}
+
+impl TryFrom<f64> for Value<'_> {
+	type Error = String;
+	fn try_from(f: f64) -> Result<Self, String> {
+		if f.is_finite() {
+			Ok(Value::Float(NiceFloat(NotNan::new(f).unwrap())))
+		} else {
+			Err(String::from("Float operation had Infinite or NaN result"))
+		}
 	}
 }

@@ -1,4 +1,6 @@
 use std::fs::read_to_string;
+
+use ordered_float::NotNan;
 use unicode_xid::UnicodeXID;
 
 use crate::ast::*;
@@ -111,8 +113,8 @@ peg::parser! {
 			"true" wb() { Expr::Primitive(Primitive::Bool(true)) }
 			"false" wb() { Expr::Primitive(Primitive::Bool(false)) }
 			"nil" wb() { Expr::Primitive(Primitive::Nil) }
-			s:string() { Expr::Primitive(Primitive::String(s)) }
-			f:float() { Expr::Primitive(Primitive::from_float(f).unwrap()) }
+			s:string() { Expr::Primitive(Primitive::String(s.into_boxed_str())) }
+			f:float() { Expr::Primitive(Primitive::Float(NotNan::new(f).unwrap())) }
 			i:int() { Expr::Primitive(Primitive::Int(i)) }
 			i:id() { Expr::LExpr(LExpr::Id(i)) }
 		}

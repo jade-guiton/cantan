@@ -5,6 +5,7 @@ use std::rc::Rc;
 use crate::ast::*;
 use crate::chunk::*;
 use crate::util::IntSet;
+use crate::value::{NiceStr, Value};
 
 
 #[derive(Clone)]
@@ -111,7 +112,7 @@ impl<'a> FunctionContext<'a> {
 		Ok(())
 	}
 	
-	fn add_prim_cst(&mut self, cst: Primitive) -> Result<u16, String> {
+	fn add_prim_cst(&mut self, cst: Value<'static>) -> Result<u16, String> {
 		if let Some(idx) = self.func.csts.iter().position(|cst2| &cst == cst2) {
 			Ok(idx as u16)
 		} else {
@@ -125,7 +126,7 @@ impl<'a> FunctionContext<'a> {
 	pub fn compile_expression(&mut self, expr: Expr) -> Result<(), String> {
 		match expr {
 			Expr::Primitive(cst) => {
-				let idx = self.add_prim_cst(cst)?;
+				let idx = self.add_prim_cst(Value::from(&cst))?;
 				self.func.code.push(Instr::Constant(idx));
 				self.stack_size += 1;
 			},
@@ -192,7 +193,7 @@ impl<'a> FunctionContext<'a> {
 					},
 					LExpr::Prop(obj, prop) => {
 						self.compile_expression(*obj)?;
-						let cst_idx = self.add_prim_cst(Primitive::String(prop))?;
+						let cst_idx = self.add_prim_cst(Value::String(NiceStr::from(prop)))?;
 						self.func.code.push(Instr::Prop(cst_idx));
 					},
 				}
@@ -278,7 +279,7 @@ impl<'a> FunctionContext<'a> {
 					},
 					LExpr::Prop(obj, prop) => {
 						self.compile_expression(*obj)?;
-						let cst_idx = self.add_prim_cst(Primitive::String(prop))?;
+						let cst_idx = self.add_prim_cst(Value::String(NiceStr::from(prop)))?;
 						self.compile_expression(expr)?;
 						self.func.code.push(Instr::SetProp(cst_idx));
 						self.stack_size -= 2;

@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::cmp::Ordering;
+use std::convert::TryFrom;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use gc_arena::{Collect, Gc, GcCell, MutationContext};
 
-use crate::ast::{Primitive, UnaryOp, BinaryOp};
+use crate::ast::{UnaryOp, BinaryOp};
 use crate::chunk::*;
 use crate::value::*;
 
@@ -48,7 +49,7 @@ impl<'gc> VmState<'gc> {
 	fn set_reg(&mut self, reg: u16, val: Value<'gc>) {
 		let reg = self.calls.last().unwrap().reg_base + reg as usize;
 		if reg >= self.registers.len() {
-			self.registers.resize(reg + 1, Value::Primitive(Primitive::Nil));
+			self.registers.resize(reg + 1, Value::Nil);
 		}
 		self.registers[reg] = val;
 	}
@@ -73,7 +74,7 @@ impl<'gc> VmState<'gc> {
 	fn get_cst(&self, func: &CompiledFunction, idx: u16) -> Result<Value<'gc>, String> {
 		let cst = func.csts.get(idx as usize)
 			.ok_or_else(|| String::from("Accessing undefined constant"))?;
-		Ok(Value::from(cst))
+		Ok(cst.clone_prim())
 	}
 	
 	fn has_call(&self) -> bool {
@@ -96,7 +97,7 @@ impl<'gc> VmState<'gc> {
 			self.registers.truncate(call.reg_base);
 			self.jumped = true;
 			if implicit {
-				self.stack.push(Value::Primitive(Primitive::Nil))
+				self.stack.push(Value::Nil)
 			}
 		}
 	}
@@ -157,7 +158,7 @@ impl<'gc> VmState<'gc> {
 				if reg == self.registers.len() - 1 {
 					self.registers.pop();
 				} else {
-					self.registers[reg] = Value::Primitive(Primitive::Nil);
+					self.registers[reg] = Value::Nil;
 				}
 			},
 			Instr::Discard => {
@@ -183,7 +184,7 @@ impl<'gc> VmState<'gc> {
 			},
 			Instr::JumpIfNil(rel) => {
 				let val = self.pop()?;
-				if let Value::Primitive(Primitive::Nil) = val {
+				if let Value::Nil = val {
 					self.jump(rel);
 				}
 			},
@@ -267,12 +268,12 @@ impl<'gc> VmState<'gc> {
 							BinaryOp::Or => a || b,
 							_ => unreachable!(),
 						};
-						self.stack.push(Value::Primitive(Primitive::Bool(c)));
+						self.stack.push(Value::Bool(c));
 					},
 					BinaryOp::Plus if a.get_type() == Type::String => {
 						let a = a.get_string().unwrap();
 						let b = b.get_string()?;
-						self.stack.push(Value::Primitive(Primitive::String(a + &b)));
+						self.stack.push(Value::String(NiceStr((a.to_string() + &b).into_boxed_str())));
 					}
 					BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Times | BinaryOp::Modulo
 							if a.get_type() == Type::Int && b.get_type() == Type::Int => {
@@ -285,7 +286,7 @@ impl<'gc> VmState<'gc> {
 							BinaryOp::Modulo => a.checked_rem_euclid(b).ok_or_else(|| String::from("Division by zero"))?,
 							_ => unreachable!(),
 						};
-						self.stack.push(Value::Primitive(Primitive::Int(c)));
+						self.stack.push(Value::Int(c));
 					},
 					BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Times | BinaryOp::Divides
 					| BinaryOp::IntDivides | BinaryOp::Modulo | BinaryOp::Power => {
@@ -293,12 +294,12 @@ impl<'gc> VmState<'gc> {
 							if op == BinaryOp::Plus { expected_types::<()>("Int, Float, or String", &a).unwrap_err() } else { err })?;
 						let b = b.get_numeric()?;
 						let c = match op {
-							BinaryOp::Plus => Primitive::from_float(a + b)?,
-							BinaryOp::Minus => Primitive::from_float(a - b)?,
-							BinaryOp::Times => Primitive::from_float(a * b)?,
+							BinaryOp::Plus => Value::try_from(a + b)?,
+							BinaryOp::Minus => Value::try_from(a - b)?,
+							BinaryOp::Times => Value::try_from(a * b)?,
 							BinaryOp::Divides => {
 								let c = a / b;
-								Primitive::from_float(c)?
+								Value::try_from(c)?
 							},
 							BinaryOp::IntDivides => {
 								if b == 0.0 {
@@ -308,31 +309,31 @@ impl<'gc> VmState<'gc> {
 								if c < (i32::MIN as f64) || c > (i32::MAX as f64) {
 									return Err(String::from("Result of division does not fit in integer"));
 								}
-								Primitive::Int(c as i32)
+								Value::Int(c as i32)
 							},
-							BinaryOp::Modulo => Primitive::from_float(a.rem_euclid(b))?,
-							BinaryOp::Power => Primitive::from_float(a.powf(b))?,
+							BinaryOp::Modulo => Value::try_from(a.rem_euclid(b))?,
+							BinaryOp::Power => Value::try_from(a.powf(b))?,
 							_ => unreachable!(),
 						};
-						self.stack.push(Value::Primitive(c));
+						self.stack.push(c);
 					},
 					BinaryOp::Eq => {
-						self.stack.push(Value::Primitive(Primitive::Bool(a.struct_eq(&b))));
+						self.stack.push(Value::Bool(a.struct_eq(&b)));
 					},
 					BinaryOp::NotEq => {
-						self.stack.push(Value::Primitive(Primitive::Bool(!a.struct_eq(&b))));
+						self.stack.push(Value::Bool(!a.struct_eq(&b)));
 					},
 					BinaryOp::LessEq => {
-						self.stack.push(Value::Primitive(Primitive::Bool(a.cmp(&b)? <= Ordering::Equal)));
+						self.stack.push(Value::Bool(a.cmp(&b)? <= Ordering::Equal));
 					},
 					BinaryOp::Less => {
-						self.stack.push(Value::Primitive(Primitive::Bool(a.cmp(&b)? < Ordering::Equal)));
+						self.stack.push(Value::Bool(a.cmp(&b)? < Ordering::Equal));
 					},
 					BinaryOp::Greater => {
-						self.stack.push(Value::Primitive(Primitive::Bool(a.cmp(&b)? > Ordering::Equal)));
+						self.stack.push(Value::Bool(a.cmp(&b)? > Ordering::Equal));
 					},
 					BinaryOp::GreaterEq => {
-						self.stack.push(Value::Primitive(Primitive::Bool(a.cmp(&b)? >= Ordering::Equal)));
+						self.stack.push(Value::Bool(a.cmp(&b)? >= Ordering::Equal));
 					},
 				}
 			},
@@ -342,20 +343,20 @@ impl<'gc> VmState<'gc> {
 				match op {
 					UnaryOp::Minus => {
 						res = match val {
-							Value::Primitive(Primitive::Int(i)) => Primitive::Int(-i),
-							Value::Primitive(Primitive::Float(f)) => Primitive::Float(-f),
+							Value::Int(i) => Value::Int(-i),
+							Value::Float(f) => Value::Float(NiceFloat(-f.0)),
 							_ => return Err(format!("Cannot get opposite of: {}", val.repr())),
 						}
 					},
 					UnaryOp::Not => {
-						if let Value::Primitive(Primitive::Bool(b)) = val {
-							res = Primitive::Bool(!b);
+						if let Value::Bool(b) = val {
+							res = Value::Bool(!b);
 						} else {
 							return Err(format!("Cannot get logical negation of: {}", val.repr()))
 						}
 					},
 				}
-				self.stack.push(Value::Primitive(res));
+				self.stack.push(res);
 			},
 			Instr::Index => {
 				let idx = self.pop()?;

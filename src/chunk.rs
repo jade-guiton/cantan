@@ -3,8 +3,9 @@ use std::rc::Rc;
 
 use gc_arena::Collect;
 
-use crate::ast::{UnaryOp, BinaryOp, Primitive};
+use crate::ast::{UnaryOp, BinaryOp};
 use crate::colors::*;
+use crate::value::Value;
 
 #[derive(Debug, Clone)]
 #[allow(unused)]
@@ -76,7 +77,7 @@ pub enum CompiledUpvalue {
 pub struct CompiledFunction {
 	pub child_funcs: Vec<Rc<CompiledFunction>>,
 	pub arg_cnt: u16,
-	pub csts: Vec<Primitive>,
+	pub csts: Vec<Value<'static>>,
 	pub upvalues: Vec<CompiledUpvalue>,
 	pub classes: Vec<Vec<String>>,
 	pub code: Vec<Instr>,
