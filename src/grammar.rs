@@ -54,7 +54,7 @@ peg::parser! {
 			/ "for" "(" _ i:id() _ ":" _ e:expr() _ ")" _ b:block() "end" wb() { Statement::For(i,e,b) }
 			/ "break" c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
 			/ "continue" c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }
-			/ "return" wb() _ "(" _ e:expr()? _ ")" { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
+			/ "return" wb() _ e:pexpr()? { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
 			/ "log" wb() _ e:pexpr() { Statement::Log(e) } // Temporary
 			/ l:lexpr() _ "=" _ e:expr() { Statement::Set(l, e) }
 			/ e:expr() { Statement::ExprStat(e) }

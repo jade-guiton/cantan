@@ -98,8 +98,8 @@ impl CompiledFunction {
 	pub fn list(&self) {
 		println!("{}Function{}({} args, {} constants, {} object classes):{}",
 			BRIGHT_GREEN, BRIGHT_WHITE, self.arg_cnt, self.csts.len(), self.classes.len(), RESET);
-		for instr in &self.code {
-			println!("  {}", instr.color_repr(self));
+		for (idx, instr) in self.code.iter().enumerate() {
+			println!("{}{:^4}{} {}", BRIGHT_BLACK, idx, RESET, instr.color_repr(self));
 		}
 		println!();
 		for child in &self.child_funcs {

@@ -12,6 +12,7 @@ use crate::value::{NiceStr, Value};
 pub struct BlockContext {
 	breakable: bool,
 	breaks: Vec<usize>,
+	continues: Vec<usize>,
 	locals: HashMap<String, u16>,
 }
 
@@ -222,13 +223,15 @@ impl<'a> FunctionContext<'a> {
 		Ok(())
 	}
 	
-	fn compute_jump_from(&self, from: usize) -> Result<i16, String> {
-		i16::try_from((self.func.code.len() as isize) - (from as isize))
+	fn compute_jump(&self, from: usize, to: usize) -> Result<i16, String> {
+		i16::try_from((to as isize) - (from as isize))
 			.map_err(|_| String::from("Jump in code is too far to encode"))
 	}
+	fn compute_jump_from(&self, from: usize) -> Result<i16, String> {
+		self.compute_jump(from, self.func.code.len())
+	}
 	fn compute_jump_to(&self, to: usize) -> Result<i16, String> {
-		i16::try_from((to as isize) - (self.func.code.len() as isize))
-			.map_err(|_| String::from("Jump in code is too far to encode"))
+		self.compute_jump(self.func.code.len(), to)
 	}
 
 	pub fn compile_statement(&mut self, stat: Statement) -> Result<(), String> {
@@ -290,14 +293,22 @@ impl<'a> FunctionContext<'a> {
 				let mut end_jumps = vec![];
 				let mut prev_jump;
 				
-				for (cond, block) in vec![(cond, then)].drain(..).chain(elseifs) {
+				let conds = 1 + elseifs.len();
+				
+				for (i, (cond, block)) in vec![(cond, then)].drain(..).chain(elseifs).enumerate() {
 					self.compile_expression(cond)?;
 					prev_jump = self.func.code.len();
 					self.func.code.push(Instr::JumpIfNot(0));
 					self.stack_size -= 1;
+					
 					self.compile_block(block, BlockType::Normal)?;
-					end_jumps.push(self.func.code.len());
-					self.func.code.push(Instr::Jump(0));
+					
+					// Only place a jump if there is another block afterwars
+					if !(i == conds - 1 && else_block.is_none()) {
+						end_jumps.push(self.func.code.len());
+						self.func.code.push(Instr::Jump(0));
+					}
+					
 					self.func.code[prev_jump] = Instr::JumpIfNot(
 						self.compute_jump_from(prev_jump)?);
 				}
@@ -310,16 +321,46 @@ impl<'a> FunctionContext<'a> {
 					self.func.code[end_jump] = Instr::Jump(
 						self.compute_jump_from(end_jump)?);
 				}
-			}
+			},
+			Statement::While(cond, block) => {
+				let start = self.func.code.len();
+				
+				self.compile_expression(cond)?;
+				let end_jump = self.func.code.len();
+				self.func.code.push(Instr::JumpIfNot(0));
+				self.stack_size -= 1;
+				
+				let block_ctx = self.compile_block(block, BlockType::Breakable)?;
+				self.func.code.push(Instr::Jump(
+					self.compute_jump_to(start)?));
+				
+				self.func.code[end_jump] = Instr::JumpIfNot(
+					self.compute_jump_from(end_jump)?);
+				
+				self.finish_loop(block_ctx, start)?;
+			},
+			Statement::DoWhile(block, cond) => {
+				let start = self.func.code.len();
+				
+				let block_ctx = self.compile_block(block, BlockType::Breakable)?;
+				
+				let cond_idx = self.func.code.len();
+				self.compile_expression(cond)?;
+				self.func.code.push(Instr::JumpIf(
+					self.compute_jump_to(start)?));
+				self.stack_size -= 1;
+				
+				self.finish_loop(block_ctx, cond_idx)?;
+			},
 			Statement::Loop(block) => {
 				let start = self.func.code.len();
-				let breaks = self.compile_block(block, BlockType::Breakable)?;
+				
+				let block_ctx = self.compile_block(block, BlockType::Breakable)?;
+				
 				let jump = self.compute_jump_to(start)?;
 				self.func.code.push(Instr::Jump(jump));
-				for break_idx in breaks {
-					self.func.code[break_idx] = Instr::Jump(
-						self.compute_jump_from(break_idx)?);
-				}
+				
+				self.finish_loop(block_ctx, start)?;
 			},
 			Statement::Break(loops) => {
 				if let Some(block_idx) = self.blocks.iter().enumerate().rev()
@@ -333,6 +374,20 @@ impl<'a> FunctionContext<'a> {
 					self.func.code.push(Instr::Jump(0));
 				} else {
 					return Err(format!("Cannot break {} loops", loops));
+				}
+			},
+			Statement::Continue(loops) => {
+				if let Some(block_idx) = self.blocks.iter().enumerate().rev()
+						.filter(|(_,b)| b.breakable).nth(loops as usize - 1).map(|(i,_)| i) {
+					// Drop locals from traversed blocks
+					for block_idx in (block_idx..self.blocks.len()).rev() {
+						self.drop_locals(block_idx, true);
+					}
+					let block = &mut self.blocks[block_idx];
+					block.continues.push(self.func.code.len());
+					self.func.code.push(Instr::Jump(0));
+				} else {
+					return Err(format!("Cannot continue {} loops", loops));
 				}
 			},
 			Statement::Return(expr) => {
@@ -366,6 +421,7 @@ impl<'a> FunctionContext<'a> {
 		self.blocks.push(BlockContext {
 			breakable: block_type == BlockType::Breakable,
 			breaks: vec![],
+			continues: vec![],
 			locals: HashMap::new()
 		});
 		
@@ -390,7 +446,7 @@ impl<'a> FunctionContext<'a> {
 	
 	// Returns a list of code indices with jumps that should jump out of loop,
 	// in the case of a Breakable block
-	fn compile_block(&mut self, block: Block, block_type: BlockType) -> Result<Vec<usize>, String> {
+	fn compile_block(&mut self, block: Block, block_type: BlockType) -> Result<BlockContext, String> {
 		self.start_block(block_type);
 		
 		for stat in block {
@@ -400,7 +456,21 @@ impl<'a> FunctionContext<'a> {
 		self.drop_locals(self.blocks.len() - 1, false);
 		
 		let block = self.blocks.pop().unwrap();
-		Ok(block.breaks)
+		Ok(block)
+	}
+	
+	fn finish_loop(&mut self, block: BlockContext, in_idx: usize) -> Result<(), String> {
+		for break_idx in block.breaks {
+			self.func.code[break_idx] = Instr::Jump(
+				self.compute_jump_from(break_idx)?);
+		}
+		
+		for continue_idx in block.continues {
+			self.func.code[continue_idx] = Instr::Jump(
+				self.compute_jump(continue_idx, in_idx)?);
+		}
+		
+		Ok(())
 	}
 	
 	pub fn add_log(&mut self) {
