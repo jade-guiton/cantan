@@ -233,23 +233,26 @@ impl<'a> FunctionContext<'a> {
 	fn compute_jump_to(&self, to: usize) -> Result<i16, String> {
 		self.compute_jump(self.func.code.len(), to)
 	}
+	
+	fn add_local(&mut self, id: &str) -> u16 {
+		if let Some(reg) = self.blocks.last_mut().unwrap().locals.get(id).copied() {
+			// Shadow previous binding
+			self.func.code.push(Instr::Drop(reg));
+			reg
+		} else {
+			let reg = self.used_regs.find_hole();
+			self.used_regs.add(reg);
+			self.blocks.last_mut().unwrap().locals.insert(id.to_string(), reg);
+			reg
+		}
+	}
 
 	pub fn compile_statement(&mut self, stat: Statement) -> Result<(), String> {
 		match stat {
 			Statement::Let(pat, expr) => {
 				match pat {
 					Pattern::Id(id) => {
-						let reg = {
-							if let Some(reg) = self.blocks.last_mut().unwrap().locals.get(&id).copied() { // Shadowing previous binding
-								self.func.code.push(Instr::Drop(reg));
-								reg
-							} else {
-								let reg = self.used_regs.find_hole();
-								self.used_regs.add(reg);
-								self.blocks.last_mut().unwrap().locals.insert(id, reg);
-								reg
-							}
-						};
+						let reg = self.add_local(&id);
 						
 						self.compile_expression(expr)?;
 						
@@ -357,10 +360,46 @@ impl<'a> FunctionContext<'a> {
 				
 				let block_ctx = self.compile_block(block, BlockType::Breakable)?;
 				
-				let jump = self.compute_jump_to(start)?;
-				self.func.code.push(Instr::Jump(jump));
+				self.func.code.push(Instr::Jump(self.compute_jump_to(start)?));
 				
 				self.finish_loop(block_ctx, start)?;
+			},
+			Statement::For(id, iter, block) => {
+				// Keep track of iterator in anonymous local in block around
+				// loop block
+				self.start_block(BlockType::Normal);
+				let iter_reg = self.add_local("");
+				
+				self.compile_expression(iter)?;
+				self.func.code.push(Instr::Store(iter_reg));
+				self.stack_size -= 1;
+				
+				let start = self.func.code.len();
+				
+				self.start_block(BlockType::Breakable);
+				
+				self.func.code.push(Instr::Next(iter_reg));
+				// We don't use stack_size to keep track here
+				// since Next can push either 1 or 2 values on the stack
+				let end_jump = self.func.code.len();
+				self.func.code.push(Instr::JumpIfNot(0));
+				let val_reg = self.add_local(&id);
+				self.func.code.push(Instr::Store(val_reg));
+				
+				for stat in block {
+					self.compile_statement(stat)?;
+				}
+				
+				let block_ctx = self.finish_block();
+				
+				self.func.code.push(Instr::Jump(
+					self.compute_jump_to(start)?));
+				self.finish_loop(block_ctx, start)?;
+				
+				self.func.code[end_jump] = Instr::JumpIfNot(
+					self.compute_jump_from(end_jump)?);
+				
+				self.finish_block();
 			},
 			Statement::Break(loops) => {
 				if let Some(block_idx) = self.blocks.iter().enumerate().rev()
@@ -409,7 +448,6 @@ impl<'a> FunctionContext<'a> {
 				self.func.code.push(Instr::Discard);
 				self.stack_size -= 1;
 			},
-			_ => { todo!() }
 		}
 		
 		assert!(self.stack_size == 0, "Compiler logic error: {} values remained on stack after statement compilation", self.stack_size);
@@ -438,10 +476,16 @@ impl<'a> FunctionContext<'a> {
 	// before jumping, where we don't want to forget about those
 	// locals in the rest of the code quite yet.
 	fn drop_locals(&mut self, block_idx: usize, emit_only: bool) {
-		for (_, reg) in &self.blocks[block_idx].locals {
+		let block = &self.blocks[block_idx];
+		for (_, reg) in &block.locals {
 			self.func.code.push(Instr::Drop(*reg));
 			if !emit_only { self.used_regs.remove(*reg); }
 		}
+	}
+	
+	fn finish_block(&mut self) -> BlockContext {
+		self.drop_locals(self.blocks.len() - 1, false);
+		self.blocks.pop().unwrap()
 	}
 	
 	// Returns a list of code indices with jumps that should jump out of loop,
@@ -453,10 +497,7 @@ impl<'a> FunctionContext<'a> {
 			self.compile_statement(stat)?;
 		}
 		
-		self.drop_locals(self.blocks.len() - 1, false);
-		
-		let block = self.blocks.pop().unwrap();
-		Ok(block)
+		Ok(self.finish_block())
 	}
 	
 	fn finish_loop(&mut self, block: BlockContext, in_idx: usize) -> Result<(), String> {

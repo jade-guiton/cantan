@@ -182,12 +182,6 @@ impl<'gc> VmState<'gc> {
 					self.jump(rel);
 				}
 			},
-			Instr::JumpIfNil(rel) => {
-				let val = self.pop()?;
-				if let Value::Nil = val {
-					self.jump(rel);
-				}
-			},
 			Instr::NewFunction(func_idx) => {
 				let chunk2 = func.chunk.child_funcs.get(func_idx as usize)
 					.ok_or_else(|| String::from("Accessing undefined function"))?
@@ -379,6 +373,19 @@ impl<'gc> VmState<'gc> {
 				let obj = self.pop()?;
 				let idx = self.get_cst(&func.chunk, cst_idx)?.get_string()?;
 				obj.set_prop(&idx, val, mc)?;
+			},
+			Instr::Next(iter_reg) => {
+				let iter = self.get_reg(iter_reg)?;
+				let next = iter.next(mc)?;
+				if let Some(new_iter) = next.0 {
+					self.set_reg(iter_reg, new_iter);
+				}
+				if let Some(value) = next.1 {
+					self.stack.push(value);
+					self.stack.push(Value::Bool(true));
+				} else {
+					self.stack.push(Value::Bool(false));
+				}
 			},
 		}
 		

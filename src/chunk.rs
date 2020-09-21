@@ -23,7 +23,6 @@ pub enum Instr {
 	Jump(i16), // Relative jump
 	JumpIf(i16), // Jump if stack top == true
 	JumpIfNot(i16), // Jump if stack top == false
-	JumpIfNil(i16), // Jump if stack top == nil
 	
 	// Functions
 	NewFunction(u16), // Instantiate function by index
@@ -44,6 +43,7 @@ pub enum Instr {
 	SetIndex, // stack[-3] [ stack[-2] ] ← stack[-1]
 	Prop(u16), // stack[-1] [ cst(u16) ] → stack
 	SetProp(u16), // stack[-2] [ cst(u16) ] ← stack[-1]
+	Next(u16), // next(reg(u16)) → (true, value) / false
 }
 
 impl Instr {

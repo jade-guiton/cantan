@@ -1,5 +1,5 @@
-use gc_arena::Collect;
 use std::hash::{Hash, Hasher};
+use std::cell::Cell;
 use std::convert::TryFrom;
 use std::collections::HashMap;
 use std::cmp::Ordering;
@@ -7,7 +7,7 @@ use std::fmt::Write;
 use std::ops::Deref;
 use std::rc::Rc;
 
-use gc_arena::{Gc, GcCell, MutationContext};
+use gc_arena::{Collect, Gc, GcCell, MutationContext};
 use ordered_float::NotNan;
 
 use crate::ast::Primitive;
@@ -67,9 +67,7 @@ impl Deref for NiceFloat {
 	}
 }
 
-unsafe impl Collect for NiceFloat {
-	fn needs_trace() -> bool { false }
-}
+static_collect!(NiceFloat);
 
 // New type to implement Collect
 #[derive(Clone, Debug)]
@@ -89,8 +87,13 @@ impl Deref for NiceStr {
 	}
 }
 
-unsafe impl Collect for NiceStr {
-	fn needs_trace() -> bool { false }
+static_collect!(NiceStr);
+
+#[derive(Clone, Debug, Collect)]
+#[collect(no_drop)]
+pub struct ListIterator<'gc> {
+	list: Vec<Value<'gc>>,
+	idx: Cell<usize>,
 }
 
 #[derive(Clone, Debug, Collect)]
@@ -108,11 +111,13 @@ pub enum Value<'gc> {
 	Map(GcCell<'gc, HashMap<Value<'gc>, Value<'gc>>>),
 	Object(GcCell<'gc, HashMap<String, Value<'gc>>>),
 	Function(Gc<'gc, Function<'gc>>),
+	
+	ListIterator(Gc<'gc, ListIterator<'gc>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
-	Int, Float, String, Bool, Nil, Tuple, List, Map, Object, Function,
+	Int, Float, String, Bool, Nil, Tuple, List, Map, Object, Function, Iterator,
 }
 
 impl Value<'_> {
@@ -129,6 +134,8 @@ impl Value<'_> {
 			Value::Map(_) => Type::Map,
 			Value::Object(_) => Type::Object,
 			Value::Function(_) => Type::Function,
+			
+			Value::ListIterator(_) => Type::Iterator,
 		}
 	}
 }
@@ -320,7 +327,10 @@ impl<'gc> Value<'gc> {
 			},
 			Value::Function(fun) => {
 				format!("<function {:x}>", Gc::as_ptr(*fun) as usize)
-			}
+			},
+			Value::ListIterator(iter) => {
+				format!("<iterator {:x}>", Gc::as_ptr(*iter) as usize)
+			},
 		}
 	}
 	
@@ -390,6 +400,28 @@ impl<'gc> Value<'gc> {
 			}
 		}
 	}
+	
+	pub fn next(&self, mc: MutationContext<'gc, '_>) -> Result<(Option<Value<'gc>>, Option<Value<'gc>>), String> {
+		match self {
+			Value::List(list) => {
+				let iter = Value::ListIterator(Gc::allocate(mc, ListIterator {
+					list: list.read().to_vec(),
+					idx: Cell::new(0),
+				}));
+				let res = iter.next(mc)?.1;
+				Ok((Some(iter), res))
+			}
+			Value::ListIterator(iter) => {
+				if let Some(val) = iter.list.get(iter.idx.get()).cloned() {
+					iter.idx.set(iter.idx.get() + 1);
+					Ok((None, Some(val)))
+				} else {
+					Ok((None, None))
+				}
+			},
+			_ => Err(format!("Cannot iterate over {}", self.repr())),
+		}
+	}
 }
 
 // Note: This is memory equality, not structural identity;
@@ -431,6 +463,8 @@ impl Hash for Value<'_> {
 			Value::Map(map) => map.as_ptr().hash(state),
 			Value::Object(obj) => obj.as_ptr().hash(state),
 			Value::Function(fun) => Gc::as_ptr(*fun).hash(state),
+			
+			Value::ListIterator(iter) => Gc::as_ptr(*iter).hash(state),
 		}
 	}
 }
