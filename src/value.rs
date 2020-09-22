@@ -3,7 +3,7 @@ use std::cell::Cell;
 use std::convert::TryFrom;
 use std::collections::HashMap;
 use std::cmp::Ordering;
-use std::fmt::Write;
+use std::fmt::{self, Write};
 use std::ops::Deref;
 use std::rc::Rc;
 
@@ -12,11 +12,6 @@ use ordered_float::NotNan;
 
 use crate::ast::Primitive;
 use crate::chunk::CompiledFunction;
-
-// To resolve infinite recursion from default impl
-unsafe impl Collect for Tuple<'_> {
-	fn needs_trace() -> bool { true }
-}
 
 #[derive(Collect)]
 #[collect(no_drop)]
@@ -36,23 +31,6 @@ impl<'gc> Function<'gc> {
 	pub fn main(chunk: Rc<CompiledFunction>) -> Self {
 		Function { chunk, upvalues: vec![] }
 	}
-}
-
-// We need a new type to allow us to override the default
-// Collect implementation on Boxed slices, which currently
-// causes infinite recursion
-#[derive(Clone, Debug)]
-pub struct Tuple<'gc>(Box<[Value<'gc>]>);
-
-impl<'gc> Tuple<'gc> {
-	pub fn new(values: Vec<Value<'gc>>) -> Self {
-		Tuple(values.into_boxed_slice())
-	}
-}
-
-impl<'gc> Deref for Tuple<'gc> {
-	type Target = [Value<'gc>];
-	fn deref(&self) -> &[Value<'gc>] { self.0.deref() }
 }
 
 // New type to implement Collect
@@ -96,6 +74,32 @@ pub struct ListIterator<'gc> {
 	idx: Cell<usize>,
 }
 
+pub trait CantanFunction = for<'gc, 'ctx> FnMut(MutationContext<'gc, 'ctx>, Vec<Value<'gc>>) -> Result<Value<'gc>, String> + 'static;
+
+pub struct NativeFunction {
+	pub func: Box<dyn CantanFunction>
+}
+
+impl NativeFunction {
+	pub fn new(func: impl CantanFunction) -> Self {
+		NativeFunction { func: Box::new(func) }
+	}
+}
+
+impl fmt::Debug for NativeFunction {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		write!(fmt, "NativeFunction @ 0x{:x}", self.func.as_ref() as *const _ as *const () as usize)
+	}
+}
+
+// Not sure if this is safe?
+// I don't think a CantanFunction can "contain" a Gc<'gc>, since it is required
+// to last for a 'static lifetime, but I'm not 100% sure.
+unsafe impl Collect for NativeFunction {
+	fn needs_trace() -> bool { false }
+}
+
+
 #[derive(Clone, Debug, Collect)]
 #[collect(no_drop)]
 pub enum Value<'gc> {
@@ -106,11 +110,12 @@ pub enum Value<'gc> {
 	Float(NiceFloat),
 	String(NiceStr),
 	
-	Tuple(Tuple<'gc>),
+	Tuple(Gc<'gc, Vec<Value<'gc>>>),
 	List(GcCell<'gc, Vec<Value<'gc>>>),
 	Map(GcCell<'gc, HashMap<Value<'gc>, Value<'gc>>>),
 	Object(GcCell<'gc, HashMap<String, Value<'gc>>>),
 	Function(Gc<'gc, Function<'gc>>),
+	NativeFunction(GcCell<'gc, NativeFunction>),
 	
 	ListIterator(Gc<'gc, ListIterator<'gc>>),
 }
@@ -134,6 +139,7 @@ impl Value<'_> {
 			Value::Map(_) => Type::Map,
 			Value::Object(_) => Type::Object,
 			Value::Function(_) => Type::Function,
+			Value::NativeFunction(_) => Type::Function,
 			
 			Value::ListIterator(_) => Type::Iterator,
 		}
@@ -325,11 +331,14 @@ impl<'gc> Value<'gc> {
 				write!(buf, "}}").unwrap();
 				buf
 			},
-			Value::Function(fun) => {
-				format!("<fn {:x}>", Gc::as_ptr(*fun) as usize)
+			Value::Function(func) => {
+				format!("<fn 0x{:x}>", Gc::as_ptr(*func) as usize)
+			},
+			Value::NativeFunction(func) => {
+				format!("<fn 0x{:x}>", func.as_ptr() as usize)
 			},
 			Value::ListIterator(iter) => {
-				format!("<iter {:x}>", Gc::as_ptr(*iter) as usize)
+				format!("<iter 0x{:x}>", Gc::as_ptr(*iter) as usize)
 			},
 		}
 	}
@@ -441,6 +450,7 @@ impl<'gc> PartialEq for Value<'gc> {
 			(Value::Map(m1), Value::Map(m2)) => m1.as_ptr() == m2.as_ptr(),
 			(Value::Object(o1), Value::Object(o2)) => o1.as_ptr() == o2.as_ptr(),
 			(Value::Function(f1), Value::Function(f2)) => Gc::as_ptr(*f1) == Gc::as_ptr(*f2),
+			(Value::NativeFunction(f1), Value::NativeFunction(f2)) => f1.as_ptr() == f2.as_ptr(),
 			_ => false,
 		}
 	}
@@ -462,7 +472,8 @@ impl Hash for Value<'_> {
 			Value::List(list) => list.as_ptr().hash(state),
 			Value::Map(map) => map.as_ptr().hash(state),
 			Value::Object(obj) => obj.as_ptr().hash(state),
-			Value::Function(fun) => Gc::as_ptr(*fun).hash(state),
+			Value::Function(func) => Gc::as_ptr(*func).hash(state),
+			Value::NativeFunction(func) => func.as_ptr().hash(state),
 			
 			Value::ListIterator(iter) => Gc::as_ptr(*iter).hash(state),
 		}

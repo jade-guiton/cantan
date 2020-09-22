@@ -212,14 +212,20 @@ impl<'gc> VmState<'gc> {
 			Instr::Call(arg_cnt) => {
 				let args: Vec<Value> = self.pop_n(arg_cnt as usize)?;
 				let func2 = self.pop()?;
-				if let Value::Function(func2) = func2 {
-					let chunk2 = &func2.chunk;
-					if args.len() != chunk2.arg_cnt as usize {
-						return Err(format!("Expected {} arguments, got {}", chunk2.arg_cnt, args.len()));
+				match func2 {
+					Value::Function(func2) => {
+						let chunk2 = &func2.chunk;
+						if args.len() != chunk2.arg_cnt as usize {
+							return Err(format!("Expected {} arguments, got {}", chunk2.arg_cnt, args.len()));
+						}
+						self.call_function(func2, args);
+					},
+					Value::NativeFunction(func2) => {
+						self.stack.push((func2.write(mc).func)(mc, args)?);
+					},
+					_ => {
+						return Err(format!("Cannot call non-function: {}", func2.repr()));
 					}
-					self.call_function(func2, args);
-				} else {
-					return Err(format!("Cannot call non-function: {}", func2.repr()));
 				}
 			},
 			Instr::Return => {
@@ -230,7 +236,7 @@ impl<'gc> VmState<'gc> {
 			},
 			Instr::NewTuple(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
-				self.stack.push(Value::Tuple(Tuple::new(values)));
+				self.stack.push(Value::Tuple(Gc::allocate(mc, values)));
 			},
 			Instr::NewList(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
