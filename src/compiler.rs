@@ -33,6 +33,7 @@ pub struct FunctionContext<'a> {
 	arg_names: Vec<String>,
 	used_regs: IntSet<u16>,
 	blocks: Vec<BlockContext>,
+	cur_def: Option<(String, u16)>,
 	upvalues: Vec<UpvalueSpec>,
 	stack_size: usize,
 }
@@ -47,6 +48,7 @@ impl<'a> FunctionContext<'a> {
 			arg_names,
 			used_regs: IntSet::new(),
 			blocks: vec![],
+			cur_def: None,
 			upvalues: vec![],
 			stack_size: 0,
 		})
@@ -60,11 +62,16 @@ impl<'a> FunctionContext<'a> {
 		Ok(upv_idx)
 	}
 	
+	// block.cur_def counts (allowing indirect recursive definitions)
 	fn find_upvalue(&mut self, id: &str) -> Result<Option<u16>, String> {
 		if let Some(mut ctx) = self.parent {
 			let mut up = 1;
 			loop {
-				if let Some(reg) = ctx.find_local(id) {
+				let reg = ctx.cur_def.as_ref()
+					.filter(|(id2,_)| id == id2)
+					.map(|(_,reg)| *reg)
+					.or_else(|| ctx.find_local(id));
+				if let Some(reg) = reg {
 					let upv = self.new_upvalue(UpvalueSpec { up, reg })?;
 					return Ok(Some(upv));
 				}
@@ -93,6 +100,7 @@ impl<'a> FunctionContext<'a> {
 		Ok(())
 	}
 	
+	// block.cur_def does not count (no direct recursive definitions)
 	fn find_local(&self, id: &str) -> Option<u16> {
 		self.blocks.iter().rev().find_map(|b| b.locals.get(id).copied())
 	}
@@ -234,17 +242,28 @@ impl<'a> FunctionContext<'a> {
 		self.compute_jump(self.func.code.len(), to)
 	}
 	
-	fn add_local(&mut self, id: &str) -> u16 {
-		if let Some(reg) = self.blocks.last_mut().unwrap().locals.get(id).copied() {
+	fn new_reg(&mut self) -> u16 {
+		let reg = self.used_regs.find_hole();
+		self.used_regs.add(reg);
+		reg
+	}
+	
+	fn start_def(&mut self, id: &str) {
+		let reg = self.blocks.last_mut().unwrap().locals.get(id).copied()
+			.unwrap_or_else(|| self.new_reg());
+		self.cur_def = Some((id.to_string(), reg));
+	}
+	fn finish_def(&mut self) -> u16 {
+		let (id, reg) = self.cur_def.take().unwrap();
+		if self.blocks.last_mut().unwrap().locals.contains_key(&id) {
 			// Shadow previous binding
 			self.func.code.push(Instr::Drop(reg));
-			reg
 		} else {
-			let reg = self.used_regs.find_hole();
-			self.used_regs.add(reg);
 			self.blocks.last_mut().unwrap().locals.insert(id.to_string(), reg);
-			reg
 		}
+		self.func.code.push(Instr::Store(reg));
+		self.stack_size -= 1;
+		reg
 	}
 
 	pub fn compile_statement(&mut self, stat: Statement) -> Result<(), String> {
@@ -252,12 +271,11 @@ impl<'a> FunctionContext<'a> {
 			Statement::Let(pat, expr) => {
 				match pat {
 					Pattern::Id(id) => {
-						let reg = self.add_local(&id);
+						self.start_def(&id);
 						
 						self.compile_expression(expr)?;
 						
-						self.func.code.push(Instr::Store(reg));
-						self.stack_size -= 1;
+						self.finish_def();
 					},
 				}
 			},
@@ -368,7 +386,8 @@ impl<'a> FunctionContext<'a> {
 				// Keep track of iterator in anonymous local in block around
 				// loop block
 				self.start_block(BlockType::Normal);
-				let iter_reg = self.add_local("");
+				self.start_def("");
+				let iter_reg = self.finish_def();
 				
 				self.compile_expression(iter)?;
 				self.func.code.push(Instr::Store(iter_reg));
@@ -379,12 +398,11 @@ impl<'a> FunctionContext<'a> {
 				self.start_block(BlockType::Breakable);
 				
 				self.func.code.push(Instr::Next(iter_reg));
-				// We don't use stack_size to keep track here
-				// since Next can push either 1 or 2 values on the stack
+				self.stack_size += 1;
 				let end_jump = self.func.code.len();
 				self.func.code.push(Instr::JumpIfNot(0));
-				let val_reg = self.add_local(&id);
-				self.func.code.push(Instr::Store(val_reg));
+				self.start_def(&id);
+				self.finish_def();
 				
 				for stat in block {
 					self.compile_statement(stat)?;

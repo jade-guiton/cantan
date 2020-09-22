@@ -43,10 +43,7 @@ peg::parser! {
 		rule block() -> Block = s:(statement() ** _) { s }
 		pub rule lone_statement() -> Statement = _ s:statement() _ { s }
 		rule statement() -> Statement
-			= "let" wb() _ p:pattern() _ e:(
-					  "=" _ e:expr() { e }
-					/ f:fn_def() { f }
-				) { Statement::Let(p, e) }
+			= "let" wb() _ p:pattern() _ e:val_or_fn() { Statement::Let(p, e) }
 			/ "if" _ c:pexpr() _ t:block() _ ei:else_if()* e:else_()? "end" wb() { Statement::If(c,t,ei,e) }
 			/ "while" _ c:pexpr() _ b:block() _ "end" wb() { Statement::While(c, b) }
 			/ "do" wb() _ b:block() _ "while" c:pexpr() { Statement::DoWhile(b, c) }
@@ -54,7 +51,7 @@ peg::parser! {
 			/ "for" "(" _ i:id() _ ":" _ e:expr() _ ")" _ b:block() _ "end" wb() { Statement::For(i,e,b) }
 			/ "break" c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
 			/ "continue" c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }
-			/ "return" wb() _ e:pexpr()? { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
+			/ "ret" wb() _ "(" _ e:expr()? _ ")" { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
 			/ "log" wb() _ e:pexpr() { Statement::Log(e) } // Temporary
 			/ l:lexpr() _ "=" _ e:expr() { Statement::Set(l, e) }
 			/ e:expr() { Statement::ExprStat(e) }
@@ -62,6 +59,9 @@ peg::parser! {
 		rule else_() -> Block = "else" wb() _ b:block() _ { b }
 		rule pattern() -> Pattern
 			= i:id() { Pattern::Id(i) }
+		rule val_or_fn() -> Expr
+			= "=" _ e:expr() { e }
+			/ f:fn_def() { f }
 		#[cache]
 		rule lexpr() -> LExpr
 			= e:expr() {? if let Expr::LExpr(l) = e { Ok(l) } else { Err("lexpr") }  }
@@ -120,7 +120,8 @@ peg::parser! {
 		}
 		rule map_item() -> (Expr, Expr)
 			= k:expr() _ "=" _ v:expr() { (k, v) }
-		rule object_item() -> (String, Expr) = i:id() _ "=" _ e:expr() { (i,e) }
+		rule object_item() -> (String, Expr)
+			= i:id() _ e:val_or_fn() { (i,e) }
 		rule fn_def() -> Expr = "(" _ a:(id() ** (_ "," _)) _ ")" _ b:fn_body()
 				{ Expr::Function(a, b) }
 		rule fn_body() -> Block

@@ -326,10 +326,10 @@ impl<'gc> Value<'gc> {
 				buf
 			},
 			Value::Function(fun) => {
-				format!("<function {:x}>", Gc::as_ptr(*fun) as usize)
+				format!("<fn {:x}>", Gc::as_ptr(*fun) as usize)
 			},
 			Value::ListIterator(iter) => {
-				format!("<iterator {:x}>", Gc::as_ptr(*iter) as usize)
+				format!("<iter {:x}>", Gc::as_ptr(*iter) as usize)
 			},
 		}
 	}
