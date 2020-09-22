@@ -60,7 +60,6 @@ pub enum Statement {
 	Break(u32),
 	Continue(u32),
 	Return(Expr),
-	Log(Expr), // Temporary
 	ExprStat(Expr),
 }
 

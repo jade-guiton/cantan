@@ -74,28 +74,28 @@ pub struct ListIterator<'gc> {
 	idx: Cell<usize>,
 }
 
-pub trait CantanFunction = for<'gc, 'ctx> FnMut(MutationContext<'gc, 'ctx>, Vec<Value<'gc>>) -> Result<Value<'gc>, String> + 'static;
+pub trait NativeFunction = for<'gc, 'ctx> FnMut(MutationContext<'gc, 'ctx>, Vec<Value<'gc>>) -> Result<Value<'gc>, String> + 'static;
 
-pub struct NativeFunction {
-	pub func: Box<dyn CantanFunction>
+pub struct NativeFunctionWrapper {
+	pub func: Box<dyn NativeFunction>
 }
 
-impl NativeFunction {
-	pub fn new(func: impl CantanFunction) -> Self {
-		NativeFunction { func: Box::new(func) }
+impl NativeFunctionWrapper {
+	pub fn new(func: impl NativeFunction) -> Self {
+		NativeFunctionWrapper { func: Box::new(func) }
 	}
 }
 
-impl fmt::Debug for NativeFunction {
+impl fmt::Debug for NativeFunctionWrapper {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-		write!(fmt, "NativeFunction @ 0x{:x}", self.func.as_ref() as *const _ as *const () as usize)
+		write!(fmt, "NativeFunctionWrapper @ 0x{:x}", self.func.as_ref() as *const _ as *const () as usize)
 	}
 }
 
 // Not sure if this is safe?
-// I don't think a CantanFunction can "contain" a Gc<'gc>, since it is required
+// I don't think a NativeFunction can "contain" a Gc<'gc>, since it is required
 // to last for a 'static lifetime, but I'm not 100% sure.
-unsafe impl Collect for NativeFunction {
+unsafe impl Collect for NativeFunctionWrapper {
 	fn needs_trace() -> bool { false }
 }
 
@@ -115,7 +115,7 @@ pub enum Value<'gc> {
 	Map(GcCell<'gc, HashMap<Value<'gc>, Value<'gc>>>),
 	Object(GcCell<'gc, HashMap<String, Value<'gc>>>),
 	Function(Gc<'gc, Function<'gc>>),
-	NativeFunction(GcCell<'gc, NativeFunction>),
+	NativeFunction(GcCell<'gc, NativeFunctionWrapper>),
 	
 	ListIterator(Gc<'gc, ListIterator<'gc>>),
 }
@@ -123,27 +123,6 @@ pub enum Value<'gc> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
 	Int, Float, String, Bool, Nil, Tuple, List, Map, Object, Function, Iterator,
-}
-
-impl Value<'_> {
-	pub fn get_type(&self) -> Type {
-		match self {
-			Value::Nil => Type::Nil,
-			Value::Bool(_) => Type::Bool,
-			Value::Int(_) => Type::Int,
-			Value::Float(_) => Type::Float,
-			Value::String(_) => Type::String,
-			
-			Value::Tuple(_) => Type::Tuple,
-			Value::List(_) => Type::List,
-			Value::Map(_) => Type::Map,
-			Value::Object(_) => Type::Object,
-			Value::Function(_) => Type::Function,
-			Value::NativeFunction(_) => Type::Function,
-			
-			Value::ListIterator(_) => Type::Iterator,
-		}
-	}
 }
 
 pub fn expected<T>(exp: &str, got: &str) -> Result<T, String> {
@@ -171,9 +150,39 @@ macro_rules! get_prim {
 }
 
 impl<'gc> Value<'gc> {
+	pub fn from_native_func(mc: MutationContext<'gc, '_>, func: impl NativeFunction) -> Self {
+		Value::NativeFunction(GcCell::allocate(mc, NativeFunctionWrapper::new(func)))
+	}
+	
+	pub fn get_type(&self) -> Type {
+		match self {
+			Value::Nil => Type::Nil,
+			Value::Bool(_) => Type::Bool,
+			Value::Int(_) => Type::Int,
+			Value::Float(_) => Type::Float,
+			Value::String(_) => Type::String,
+			
+			Value::Tuple(_) => Type::Tuple,
+			Value::List(_) => Type::List,
+			Value::Map(_) => Type::Map,
+			Value::Object(_) => Type::Object,
+			Value::Function(_) => Type::Function,
+			Value::NativeFunction(_) => Type::Function,
+			
+			Value::ListIterator(_) => Type::Iterator,
+		}
+	}
+	
 	get_prim!(get_bool, bool, Bool);
 	get_prim!(get_int, i32, Int);
-	get_prim!(get_string, NiceStr, String);
+	
+	pub fn get_string(&self) -> Result<String, String> {
+		if let Value::String(s) = self {
+			Ok(s.0.to_string())
+		} else {
+			expected_type(Type::String, self)
+		}
+	}
 	
 	// We can't use .clone() for this, because it keeps lifetimes
 	// intact, and we need to change from 'static to 'gc when
@@ -489,6 +498,12 @@ impl From<&Primitive> for Value<'_> {
 			Primitive::Float(f) => Value::Float(NiceFloat(*f)),
 			Primitive::String(s) => Value::String(NiceStr(s.clone())),
 		}
+	}
+}
+
+impl From<String> for Value<'_> {
+	fn from(s: String) -> Self {
+		Value::String(NiceStr::from(s))
 	}
 }
 

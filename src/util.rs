@@ -50,7 +50,7 @@ impl<T: PrimInt> IntSet<T> {
 	}
 	
 	pub fn find_hole(&self) -> T {
-		if self.ranges.len() == 0 {
+		if self.ranges.is_empty() {
 			T::zero()
 		} else {
 			self.ranges[0].end

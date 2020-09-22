@@ -9,14 +9,13 @@ fn get_char(s: &str) -> char {
 	s.chars().next().unwrap()
 }
 
-static RESERVED: [&str; 19] = [
+static RESERVED: [&str; 18] = [
 	"let",
 	"if", "else", "while", "do", "loop", "for", "end",
 	"break", "continue", "return",
 	"not", "and", "or",
 	"nil", "true", "false",
 	"fn",
-	"log",
 ];
 
 pub fn parse(path: &str) -> Result<Block, String> {
@@ -52,7 +51,6 @@ peg::parser! {
 			/ "break" c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
 			/ "continue" c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }
 			/ "ret" wb() _ "(" _ e:expr()? _ ")" { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
-			/ "log" wb() _ e:pexpr() { Statement::Log(e) } // Temporary
 			/ l:lexpr() _ "=" _ e:expr() { Statement::Set(l, e) }
 			/ e:expr() { Statement::ExprStat(e) }
 		rule else_if() -> (Expr, Block) = "else" __ "if" wb() c:pexpr() _ t:block() _ { (c,t) }

@@ -13,6 +13,7 @@ pub enum Instr {
 	// Register and stack management
 	Load(u16), // Reg → Stack top
 	LoadUpv(u16), // Upvalue → Stack top
+	LoadGlobal(u16), // Constant(reg(u16)) → Stack top
 	Store(u16), // Stack top → Reg
 	StoreUpv(u16), // Stack top → Upvalue
 	Drop(u16), // Drop reg
@@ -46,13 +47,21 @@ pub enum Instr {
 	Next(u16), // next(reg(u16)) → (true, value) / false
 }
 
+fn format_cst(func: &CompiledFunction, idx: u16) -> String {
+	format!("#{}", func.csts.get(idx as usize).expect("Invalid constant in function").repr())
+}
+
 impl Instr {
 	fn color_repr(&self, func: &CompiledFunction) -> String {
 		let parts: Vec<String> = match self {
-			Instr::Constant(idx) => {
-				let cst = func.csts.get(*idx as usize).expect("Invalid constant in function");
-				vec![String::from("Constant"), format!("#{}", cst.repr())]
-			},
+			Instr::LoadGlobal(name_idx) =>
+				vec![String::from("LoadGlobal"), format_cst(func, *name_idx)],
+			Instr::Constant(idx) =>
+				vec![String::from("Constant"), format_cst(func, *idx)],
+			Instr::Prop(name_idx) =>
+				vec![String::from("Prop"), format_cst(func, *name_idx)],
+			Instr::SetProp(name_idx) =>
+				vec![String::from("SetProp"), format_cst(func, *name_idx)],
 			_ => {
 				let repr = format!("{:?}", self);
 				repr.strip_suffix(")").unwrap_or(&repr).split('(').map(|s| s.to_string()).collect()

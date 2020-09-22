@@ -10,6 +10,7 @@ mod chunk;
 mod cli;
 mod grammar;
 mod repl;
+mod stdlib;
 mod util;
 mod value;
 mod vm;

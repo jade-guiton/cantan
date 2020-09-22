@@ -190,8 +190,12 @@ impl<'a> FunctionContext<'a> {
 						} else if let Some(upv) = self.find_upvalue(&id)? {
 							self.func.code.push(Instr::LoadUpv(upv));
 							self.stack_size += 1;
+						} else if crate::stdlib::GLOBALS.contains(&id) {
+							let idx = self.add_prim_cst(Value::String(NiceStr::from(id)))?;
+							self.func.code.push(Instr::LoadGlobal(idx));
+							self.stack_size += 1;
 						} else {
-							return Err(format!("Referencing undefined local '{}'", id));
+							return Err(format!("Referencing undefined value '{}'", id));
 						}
 					},
 					LExpr::Index(seq, idx) => {
@@ -259,7 +263,7 @@ impl<'a> FunctionContext<'a> {
 			// Shadow previous binding
 			self.func.code.push(Instr::Drop(reg));
 		} else {
-			self.blocks.last_mut().unwrap().locals.insert(id.to_string(), reg);
+			self.blocks.last_mut().unwrap().locals.insert(id, reg);
 		}
 		self.func.code.push(Instr::Store(reg));
 		self.stack_size -= 1;
@@ -455,11 +459,6 @@ impl<'a> FunctionContext<'a> {
 				}
 				self.func.code.push(Instr::Return);
 				self.stack_size -= 1;
-			}
-			Statement::Log(expr) => { // Temporary
-				self.compile_expression(expr)?;
-				self.func.code.push(Instr::Log);
-				self.stack_size -= 1;
 			},
 			Statement::ExprStat(expr) => {
 				self.compile_expression(expr)?;
@@ -495,7 +494,7 @@ impl<'a> FunctionContext<'a> {
 	// locals in the rest of the code quite yet.
 	fn drop_locals(&mut self, block_idx: usize, emit_only: bool) {
 		let block = &self.blocks[block_idx];
-		for (_, reg) in &block.locals {
+		for reg in block.locals.values() {
 			self.func.code.push(Instr::Drop(*reg));
 			if !emit_only { self.used_regs.remove(*reg); }
 		}

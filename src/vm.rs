@@ -22,6 +22,7 @@ struct Call<'gc> {
 #[derive(Collect)]
 #[collect(no_drop)]
 pub struct VmState<'gc> {
+	globals: HashMap<String, Value<'gc>>,
 	calls: Vec<Call<'gc>>,
 	registers: Vec<Value<'gc>>,
 	stack: Vec<Value<'gc>>,
@@ -37,6 +38,7 @@ make_arena!(pub VmArena, MutVmState);
 impl<'gc> VmState<'gc> {
 	pub fn new() -> Self {
 		VmState {
+			globals: HashMap::new(),
 			calls: vec![],
 			registers: vec![],
 			stack: vec![],
@@ -44,6 +46,10 @@ impl<'gc> VmState<'gc> {
 			idx: 0,
 			jumped: false
 		}
+	}
+	
+	fn init_globals(&mut self, mc: MutationContext<'gc, '_>) {
+		crate::stdlib::create(&mut self.globals, mc);
 	}
 	
 	fn set_reg(&mut self, reg: u16, val: Value<'gc>) {
@@ -78,7 +84,7 @@ impl<'gc> VmState<'gc> {
 	}
 	
 	fn has_call(&self) -> bool {
-		self.calls.len() > 0
+		!self.calls.is_empty()
 	}
 	
 	fn jump(&mut self, rel: i16) {
@@ -126,6 +132,12 @@ impl<'gc> VmState<'gc> {
 					Upvalue::Closed(val) => val.clone(),
 				};
 				self.stack.push(val);
+			},
+			Instr::LoadGlobal(name_idx) => {
+				let name = self.get_cst(&func.chunk, name_idx)?.get_string()?;
+				let val = self.globals.get(name.deref())
+					.ok_or_else(|| format!("Accessing undefined global '{}'", name.deref()))?;
+				self.stack.push(val.clone());
 			},
 			Instr::Store(reg) => {
 				let val = self.pop()?;
@@ -192,7 +204,7 @@ impl<'gc> VmState<'gc> {
 						CompiledUpvalue::Direct(reg) => {
 							let reg = self.calls.last().unwrap().reg_base + *reg as usize;
 							if let Some(upv) = self.upvalues.get(&reg) {
-								upvalues.push(upv.clone());
+								upvalues.push(*upv);
 							} else {
 								let upv = GcCell::allocate(mc, Upvalue::Open(reg));
 								self.upvalues.insert(reg, upv);
@@ -200,7 +212,7 @@ impl<'gc> VmState<'gc> {
 							}
 						},
 						CompiledUpvalue::Indirect(upv_idx) => {
-							let upv = func.upvalues.get(*upv_idx as usize).map(|upv| upv.clone())
+							let upv = func.upvalues.get(*upv_idx as usize).copied()
 								.ok_or_else(|| String::from("Child function references undefined upvalue"))?;
 							upvalues.push(upv);
 						},
@@ -463,7 +475,9 @@ pub struct ReplVm {
 
 impl ReplVm {
 	pub fn new() -> Self {
-		ReplVm { arena: new_arena() }
+		let mut vm = ReplVm { arena: new_arena() };
+		vm.arena.mutate(|mc, state| state.write(mc).init_globals(mc));
+		vm
 	}
 	
 	pub fn execute_from(&mut self, func: Rc<CompiledFunction>, from: usize) -> Result<(), String>  {
@@ -480,6 +494,7 @@ impl ReplVm {
 pub fn execute_function(func: Rc<CompiledFunction>) -> Result<(), String>  {
 	let mut arena = new_arena();
 	arena.mutate(|mc, state| {
+		state.write(mc).init_globals(mc);
 		state.write(mc).call_function(Gc::allocate(mc, Function::main(func)), vec![]);
 	});
 	while arena.root.read().has_call() {
