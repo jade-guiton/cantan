@@ -9,9 +9,9 @@ fn get_char(s: &str) -> char {
 	s.chars().next().unwrap()
 }
 
-static RESERVED: [&str; 18] = [
+static RESERVED: [&str; 19] = [
 	"let",
-	"if", "else", "while", "do", "loop", "for", "end",
+	"if", "else", "while", "do", "loop", "for", "in", "end",
 	"break", "continue", "return",
 	"not", "and", "or",
 	"nil", "true", "false",
@@ -47,11 +47,17 @@ peg::parser! {
 			/ "while" _ c:pexpr() _ b:block() _ "end" wb() { Statement::While(c, b) }
 			/ "do" wb() _ b:block() _ "while" c:pexpr() { Statement::DoWhile(b, c) }
 			/ "loop" wb() _ b:block() _ "end" wb() { Statement::Loop(b) }
-			/ "for" "(" _ i:id() _ ":" _ e:expr() _ ")" _ b:block() _ "end" wb() { Statement::For(i,e,b) }
+			/ "for" "(" _ i:id() _ "in" wb() _ e:expr() _ ")" _ b:block() _ "end" wb() { Statement::For(i,e,b) }
 			/ "break" c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
 			/ "continue" c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }
 			/ "ret" wb() _ "(" _ e:expr()? _ ")" { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
-			/ l:lexpr() _ "=" _ e:expr() { Statement::Set(l, e) }
+			/ l:lexpr() _ op:assign_op() _ e:expr() {
+				if let Some(op) = op {
+					Statement::Set(l.clone(), Expr::Binary(op, Box::new(Expr::LExpr(l)), Box::new(e)))
+				} else {
+					Statement::Set(l, e)
+				}
+			}
 			/ e:expr() { Statement::ExprStat(e) }
 		rule else_if() -> (Expr, Block) = "else" __ "if" wb() c:pexpr() _ t:block() _ { (c,t) }
 		rule else_() -> Block = "else" wb() _ b:block() _ { b }
@@ -63,6 +69,10 @@ peg::parser! {
 		#[cache]
 		rule lexpr() -> LExpr
 			= e:expr() {? if let Expr::LExpr(l) = e { Ok(l) } else { Err("lexpr") }  }
+		rule assign_op() -> Option<BinaryOp>
+			= "=" { None }
+			/ "+=" { Some(BinaryOp::Plus) } / "-=" { Some(BinaryOp::Minus) }
+			/ "*=" { Some(BinaryOp::Times) } / "/=" { Some(BinaryOp::Divides) }
 		rule pexpr() -> Expr = "(" _ e:expr() _ ")" { e }
 		rule loop_count() -> u32 = "(" _ i:$(['0'..='9']+) _ ")" { i.parse().unwrap() }
 		#[cache]

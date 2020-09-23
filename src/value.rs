@@ -111,6 +111,14 @@ unsafe impl Collect for NativeFunctionWrapper<'_> {
 	}
 }
 
+#[derive(Collect)]
+#[collect(no_drop)]
+pub struct IntIterator {
+	pub next: Cell<i32>,
+	pub until: i32,
+	pub step: i32,
+}
+
 
 #[derive(Clone, Debug, Collect)]
 #[collect(no_drop)]
@@ -130,6 +138,7 @@ pub enum Value<'gc> {
 	NativeFunction(GcCell<'gc, NativeFunctionWrapper<'gc>>),
 	
 	ListIterator(Gc<'gc, ListIterator<'gc>>),
+	IntIterator(Gc<'gc, IntIterator>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -182,6 +191,7 @@ impl<'gc> Value<'gc> {
 			Value::NativeFunction(_) => Type::Function,
 			
 			Value::ListIterator(_) => Type::Iterator,
+			Value::IntIterator(_) => Type::Iterator,
 		}
 	}
 	
@@ -362,6 +372,9 @@ impl<'gc> Value<'gc> {
 			Value::ListIterator(iter) => {
 				format!("<iter 0x{:x}>", Gc::as_ptr(*iter) as usize)
 			},
+			Value::IntIterator(iter) => {
+				format!("<iter 0x{:x}>", Gc::as_ptr(*iter) as usize)
+			},
 		}
 	}
 	
@@ -454,6 +467,15 @@ impl<'gc> Value<'gc> {
 					Ok((None, None))
 				}
 			},
+			Value::IntIterator(iter) => {
+				let next = iter.next.get();
+				if next < iter.until {
+					iter.next.set(next + iter.step);
+					Ok((None, Some(Value::Int(next))))
+				} else {
+					Ok((None, None))
+				}
+			},
 			_ => Err(format!("Cannot iterate over {}", self.repr())),
 		}
 	}
@@ -502,6 +524,7 @@ impl Hash for Value<'_> {
 			Value::NativeFunction(func) => func.as_ptr().hash(state),
 			
 			Value::ListIterator(iter) => Gc::as_ptr(*iter).hash(state),
+			Value::IntIterator(iter) => Gc::as_ptr(*iter).hash(state),
 		}
 	}
 }

@@ -1,11 +1,12 @@
+use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::ops::Deref;
 
-use gc_arena::MutationContext;
+use gc_arena::{Gc, MutationContext};
 use once_cell::sync::Lazy;
 
-use crate::value::{Type, Value};
+use crate::value::{IntIterator, Type, Value};
 
 // To avoid writing the same type signature every time
 macro_rules! native_func {
@@ -93,12 +94,46 @@ native_func!(list_pop, mc, args, {
 	}
 });
 
+fn check_range_args(args: &Vec<Value>) -> Result<(Option<i32>, i32, i32), String> {
+	if args.is_empty() || args.len() > 3 {
+		return crate::value::expected("1-3 arguments", &format!("{}", args.len()));
+	}
+	let (start, until) = if args.len() == 1 {
+		(None, args[0].get_int()?)
+	} else {
+		(Some(args[0].get_int()?), args[1].get_int()?)
+	};
+	let step = if args.len() == 3 { args[2].get_int()? } else { 1 };
+	Ok((start, until, step))
+}
+
+native_func!(xrange, mc, args, {
+	let (start, until, step) = check_range_args(&args)?;
+	Ok(Value::IntIterator(Gc::allocate(mc, IntIterator {
+		next: Cell::new(start.unwrap_or(0)),
+		until,
+		step
+	})))
+});
+
+native_func!(range, mc, args, {
+	let (start, until, step) = check_range_args(&args)?;
+	Ok(Value::IntIterator(Gc::allocate(mc, IntIterator {
+		next: Cell::new(start.unwrap_or(1)),
+		until: until + 1,
+		step
+	})))
+});
+
+
 type NativeFn = for<'gc> fn(MutationContext<'gc, '_>, Vec<Value<'gc>>) -> Result<Value<'gc>, String>;
 
 pub static FUNCTIONS: Lazy<HashMap<String, NativeFn>> = Lazy::new(|| [
 	("log", log as NativeFn),
 	("writeln", writeln),
 	("repr", repr),
+	("xrange", xrange),
+	("range", range),
 ].iter().map(|(s,f)| (s.to_string(), *f)).collect());
 
 pub static GLOBAL_NAMES: Lazy<HashSet<String>> = Lazy::new(||
