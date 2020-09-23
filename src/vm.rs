@@ -233,7 +233,7 @@ impl<'gc> VmState<'gc> {
 						self.call_function(func2, args);
 					},
 					Value::NativeFunction(func2) => {
-						self.stack.push((func2.write(mc).func)(mc, args)?);
+						self.stack.push(func2.write(mc).call(mc, args)?);
 					},
 					_ => {
 						return Err(format!("Cannot call non-function: {}", func2.repr()));
@@ -384,7 +384,7 @@ impl<'gc> VmState<'gc> {
 			Instr::Prop(cst_idx) => {
 				let obj = self.pop()?;
 				let idx = self.get_cst(&func.chunk, cst_idx)?.get_string()?;
-				self.stack.push(obj.prop(&idx)?);
+				self.stack.push(obj.prop(&idx, mc)?);
 			},
 			Instr::SetProp(cst_idx) => {
 				let val = self.pop()?;

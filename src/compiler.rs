@@ -117,7 +117,6 @@ impl<'a> FunctionContext<'a> {
 			self.func.code.push(Instr::NewTuple(len));
 		}
 		self.stack_size -= len as usize;
-		self.stack_size += 1;
 		Ok(())
 	}
 	
@@ -137,7 +136,6 @@ impl<'a> FunctionContext<'a> {
 			Expr::Primitive(cst) => {
 				let idx = self.add_prim_cst(Value::from(&cst))?;
 				self.func.code.push(Instr::Constant(idx));
-				self.stack_size += 1;
 			},
 			Expr::Tuple(values) => self.compile_sequence(values, false)?,
 			Expr::List(values) => self.compile_sequence(values, true)?,
@@ -150,7 +148,6 @@ impl<'a> FunctionContext<'a> {
 				}
 				self.func.code.push(Instr::NewMap(len));
 				self.stack_size -= 2*len as usize;
-				self.stack_size += 1;
 			},
 			Expr::Object(pairs) => {
 				let len = u16::try_from(pairs.len())
@@ -169,7 +166,6 @@ impl<'a> FunctionContext<'a> {
 				let idx = u16::try_from(idx).map_err(|_| String::from("Too many object classes"))?;
 				self.func.code.push(Instr::NewObject(idx));
 				self.stack_size -= len as usize;
-				self.stack_size += 1;
 			},
 			Expr::Function(arg_names, block) => {
 				let idx = u16::try_from(self.func.child_funcs.len())
@@ -179,21 +175,17 @@ impl<'a> FunctionContext<'a> {
 				self.compile_upvalues(&mut func, upvalues)?;
 				self.func.child_funcs.push(Rc::new(func));
 				self.func.code.push(Instr::NewFunction(idx));
-				self.stack_size += 1;
 			},
 			Expr::LExpr(lexpr) => {
 				match lexpr {
 					LExpr::Id(id) => {
 						if let Some(reg) = self.find_local(&id) {
 							self.func.code.push(Instr::Load(reg));
-							self.stack_size += 1;
 						} else if let Some(upv) = self.find_upvalue(&id)? {
 							self.func.code.push(Instr::LoadUpv(upv));
-							self.stack_size += 1;
 						} else if crate::stdlib::GLOBAL_NAMES.contains(&id) {
 							let idx = self.add_prim_cst(Value::String(NiceStr::from(id)))?;
 							self.func.code.push(Instr::LoadGlobal(idx));
-							self.stack_size += 1;
 						} else {
 							return Err(format!("Referencing undefined value '{}'", id));
 						}
@@ -202,12 +194,13 @@ impl<'a> FunctionContext<'a> {
 						self.compile_expression(*seq)?;
 						self.compile_expression(*idx)?;
 						self.func.code.push(Instr::Index);
-						self.stack_size -= 1;
+						self.stack_size -= 2;
 					},
 					LExpr::Prop(obj, prop) => {
 						self.compile_expression(*obj)?;
 						let cst_idx = self.add_prim_cst(Value::String(NiceStr::from(prop)))?;
 						self.func.code.push(Instr::Prop(cst_idx));
+						self.stack_size -= 1;
 					},
 				}
 			},
@@ -219,19 +212,21 @@ impl<'a> FunctionContext<'a> {
 					self.compile_expression(arg)?;
 				}
 				self.func.code.push(Instr::Call(arg_cnt));
-				self.stack_size -= arg_cnt as usize;
+				self.stack_size -= 1 + (arg_cnt as usize);
 			},
 			Expr::Unary(op, expr) => {
 				self.compile_expression(*expr)?;
 				self.func.code.push(Instr::Unary(op));
+				self.stack_size -= 1;
 			},
 			Expr::Binary(op, expr1, expr2) => {
 				self.compile_expression(*expr1)?;
 				self.compile_expression(*expr2)?;
 				self.func.code.push(Instr::Binary(op));
-				self.stack_size -= 1;
+				self.stack_size -= 2;
 			},
 		}
+		self.stack_size += 1;
 		Ok(())
 	}
 	
@@ -391,11 +386,8 @@ impl<'a> FunctionContext<'a> {
 				// loop block
 				self.start_block(BlockType::Normal);
 				self.start_def("");
-				let iter_reg = self.finish_def();
-				
 				self.compile_expression(iter)?;
-				self.func.code.push(Instr::Store(iter_reg));
-				self.stack_size -= 1;
+				let iter_reg = self.finish_def();
 				
 				let start = self.func.code.len();
 				

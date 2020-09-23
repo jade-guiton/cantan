@@ -7,7 +7,7 @@ use std::fmt::{self, Write};
 use std::ops::Deref;
 use std::rc::Rc;
 
-use gc_arena::{Collect, Gc, GcCell, MutationContext};
+use gc_arena::{Collect, CollectionContext, Gc, GcCell, MutationContext};
 use ordered_float::NotNan;
 
 use crate::ast::Primitive;
@@ -76,17 +76,25 @@ pub struct ListIterator<'gc> {
 
 pub trait NativeFunction = for<'gc, 'ctx> FnMut(MutationContext<'gc, 'ctx>, Vec<Value<'gc>>) -> Result<Value<'gc>, String> + 'static;
 
-pub struct NativeFunctionWrapper {
-	pub func: Box<dyn NativeFunction>
+pub struct NativeFunctionWrapper<'gc> {
+	pub func: Box<dyn NativeFunction>,
+	pub this: Option<Value<'gc>>,
 }
 
-impl NativeFunctionWrapper {
-	pub fn new(func: impl NativeFunction) -> Self {
-		NativeFunctionWrapper { func: Box::new(func) }
+impl<'gc> NativeFunctionWrapper<'gc> {
+	pub fn new(func: impl NativeFunction, this: Option<Value<'gc>>) -> Self {
+		NativeFunctionWrapper { func: Box::new(func), this }
+	}
+	
+	pub fn call(&mut self, mc: MutationContext<'gc, '_>, mut args: Vec<Value<'gc>>) -> Result<Value<'gc>, String> {
+		if let Some(this) = &self.this {
+			args.insert(0, this.clone());
+		}
+		(self.func)(mc, args)
 	}
 }
 
-impl fmt::Debug for NativeFunctionWrapper {
+impl fmt::Debug for NativeFunctionWrapper<'_> {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
 		write!(fmt, "NativeFunctionWrapper @ 0x{:x}", self.func.as_ref() as *const _ as *const () as usize)
 	}
@@ -95,8 +103,12 @@ impl fmt::Debug for NativeFunctionWrapper {
 // Not sure if this is safe?
 // I don't think a NativeFunction can "contain" a Gc<'gc>, since it is required
 // to last for a 'static lifetime, but I'm not 100% sure.
-unsafe impl Collect for NativeFunctionWrapper {
-	fn needs_trace() -> bool { false }
+unsafe impl Collect for NativeFunctionWrapper<'_> {
+	fn trace(&self, cc: CollectionContext) {
+		if let Some(this) = &self.this {
+			this.trace(cc);
+		}
+	}
 }
 
 
@@ -115,7 +127,7 @@ pub enum Value<'gc> {
 	Map(GcCell<'gc, HashMap<Value<'gc>, Value<'gc>>>),
 	Object(GcCell<'gc, HashMap<String, Value<'gc>>>),
 	Function(Gc<'gc, Function<'gc>>),
-	NativeFunction(GcCell<'gc, NativeFunctionWrapper>),
+	NativeFunction(GcCell<'gc, NativeFunctionWrapper<'gc>>),
 	
 	ListIterator(Gc<'gc, ListIterator<'gc>>),
 }
@@ -140,8 +152,8 @@ pub fn expected_type<T>(exp: Type, got: &Value) -> Result<T, String> {
 macro_rules! get_prim {
 	($name:ident, $rust_type:ty, $cn_type:ident) => {
 		pub fn $name(&self) -> Result<$rust_type, String> {
-			if let Value::$cn_type(b) = self {
-				Ok(b.clone())
+			if let Value::$cn_type(v) = self {
+				Ok(v.clone())
 			} else {
 				expected_type(Type::$cn_type, self)
 			}
@@ -150,8 +162,8 @@ macro_rules! get_prim {
 }
 
 impl<'gc> Value<'gc> {
-	pub fn from_native_func(mc: MutationContext<'gc, '_>, func: impl NativeFunction) -> Self {
-		Value::NativeFunction(GcCell::allocate(mc, NativeFunctionWrapper::new(func)))
+	pub fn from_native_func(mc: MutationContext<'gc, '_>, func: impl NativeFunction, this: Option<Value<'gc>>) -> Self {
+		Value::NativeFunction(GcCell::allocate(mc, NativeFunctionWrapper::new(func, this)))
 	}
 	
 	pub fn get_type(&self) -> Type {
@@ -175,6 +187,7 @@ impl<'gc> Value<'gc> {
 	
 	get_prim!(get_bool, bool, Bool);
 	get_prim!(get_int, i32, Int);
+	get_prim!(get_list, GcCell<'gc, Vec<Value<'gc>>>, List);
 	
 	pub fn get_string(&self) -> Result<String, String> {
 		if let Value::String(s) = self {
@@ -394,13 +407,17 @@ impl<'gc> Value<'gc> {
 		Ok(())
 	}
 	
-	pub fn prop(&self, prop: &str) -> Result<Value<'gc>, String> {
+	pub fn prop(&self, prop: &str, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, String> {
 		match self {
 			Value::Object(obj) => {
 				Ok(obj.read().get(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?.clone())
 			},
 			_ => {
-				Err(format!("Cannot get prop of {:?}", self.get_type()))
+				if let Some(met) = crate::stdlib::METHODS.get(&self.get_type()).and_then(|mets| mets.get(prop)) {
+					Ok(Value::from_native_func(mc, met, Some(self.clone())))
+				} else {
+					Err(format!("Cannot get prop '{}' of {:?}", prop, self.get_type()))
+				}
 			}
 		}
 	}
