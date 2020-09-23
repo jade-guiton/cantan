@@ -1,5 +1,6 @@
 
 use std::collections::{HashMap, HashSet};
+use std::ops::Deref;
 
 use gc_arena::MutationContext;
 use once_cell::sync::Lazy;
@@ -56,12 +57,18 @@ native_func!(repr, args, {
 	Ok(Value::from(args[0].repr()))
 });
 
-pub static GLOBALS: Lazy<HashSet<String>> = Lazy::new(|| [
-	"log", "writeln", "repr",
-].iter().map(|s| s.to_string()).collect());
+type NativeFn = for<'gc> fn(MutationContext<'gc, '_>, Vec<Value<'gc>>) -> Result<Value<'gc>, String>;
+
+pub static FUNCTIONS: Lazy<HashMap<String, NativeFn>> = Lazy::new(|| [
+	("log", log as NativeFn),
+	("writeln", writeln),
+	("repr", repr),
+].iter().map(|(s,f)| (s.to_string(), *f)).collect());
+
+pub static GLOBAL_NAMES: Lazy<HashSet<String>> = Lazy::new(|| FUNCTIONS.keys().cloned().collect());
 
 pub fn create<'gc>(globals: &mut HashMap<String, Value<'gc>>, mc: MutationContext<'gc, '_>) {
-	globals.insert("log".to_string(), Value::from_native_func(mc, log));
-	globals.insert("writeln".to_string(), Value::from_native_func(mc, writeln));
-	globals.insert("repr".to_string(), Value::from_native_func(mc, repr));
+	for (name, func) in FUNCTIONS.deref() {
+		globals.insert(name.clone(), Value::from_native_func(mc, func));
+	}
 }

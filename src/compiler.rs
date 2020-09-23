@@ -190,7 +190,7 @@ impl<'a> FunctionContext<'a> {
 						} else if let Some(upv) = self.find_upvalue(&id)? {
 							self.func.code.push(Instr::LoadUpv(upv));
 							self.stack_size += 1;
-						} else if crate::stdlib::GLOBALS.contains(&id) {
+						} else if crate::stdlib::GLOBAL_NAMES.contains(&id) {
 							let idx = self.add_prim_cst(Value::String(NiceStr::from(id)))?;
 							self.func.code.push(Instr::LoadGlobal(idx));
 							self.stack_size += 1;
