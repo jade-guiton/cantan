@@ -67,14 +67,7 @@ impl Deref for NiceStr {
 
 static_collect!(NiceStr);
 
-#[derive(Clone, Debug, Collect)]
-#[collect(no_drop)]
-pub struct ListIterator<'gc> {
-	list: Vec<Value<'gc>>,
-	idx: Cell<usize>,
-}
-
-pub trait NativeFunction = for<'gc, 'ctx> FnMut(MutationContext<'gc, 'ctx>, Vec<Value<'gc>>) -> Result<Value<'gc>, String> + 'static;
+pub trait NativeFunction = for<'gc, 'ctx> Fn(MutationContext<'gc, 'ctx>, Vec<Value<'gc>>) -> Result<Value<'gc>, String> + 'static;
 
 pub struct NativeFunctionWrapper<'gc> {
 	pub func: Box<dyn NativeFunction>,
@@ -111,13 +104,55 @@ unsafe impl Collect for NativeFunctionWrapper<'_> {
 	}
 }
 
+pub trait NativeIterator<'gc>: Collect + 'gc {
+	fn next(&mut self, mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String>;
+}
+
 #[derive(Collect)]
 #[collect(no_drop)]
-pub struct IntIterator {
-	pub next: Cell<i32>,
-	pub until: i32,
-	pub step: i32,
+pub struct ListIterator<'gc> {
+	list: Vec<Value<'gc>>,
+	idx: Cell<usize>,
 }
+
+impl<'gc> ListIterator<'gc> {
+	pub fn new(list: Vec<Value<'gc>>) -> Self {
+		ListIterator {
+			list,
+			idx: Cell::new(0),
+		}
+	}
+}
+
+impl<'gc> NativeIterator<'gc> for ListIterator<'gc> {
+	fn next(&mut self, _mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String> {
+		if let Some(val) = self.list.get(self.idx.get()).cloned() {
+			self.idx.set(self.idx.get() + 1);
+			Ok(Some(val))
+		} else {
+			Ok(None)
+		}
+	}
+}
+
+#[derive(Collect)]
+#[collect(no_drop)]
+pub struct IteratorWrapper<'gc> {
+	pub iter: Box<dyn NativeIterator<'gc>>,
+}
+
+impl<'gc> IteratorWrapper<'gc> {
+	fn new(iter: impl NativeIterator<'gc>) -> Self {
+		IteratorWrapper { iter: Box::new(iter) }
+	}
+}
+
+impl fmt::Debug for IteratorWrapper<'_> {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		write!(fmt, "NativeIteratorWrapper @ 0x{:x}", self.iter.as_ref() as *const _ as *const () as usize)
+	}
+}
+
 
 
 #[derive(Clone, Debug, Collect)]
@@ -136,9 +171,7 @@ pub enum Value<'gc> {
 	Object(GcCell<'gc, HashMap<String, Value<'gc>>>),
 	Function(Gc<'gc, Function<'gc>>),
 	NativeFunction(GcCell<'gc, NativeFunctionWrapper<'gc>>),
-	
-	ListIterator(Gc<'gc, ListIterator<'gc>>),
-	IntIterator(Gc<'gc, IntIterator>),
+	Iterator(GcCell<'gc, IteratorWrapper<'gc>>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -175,6 +208,10 @@ impl<'gc> Value<'gc> {
 		Value::NativeFunction(GcCell::allocate(mc, NativeFunctionWrapper::new(func, this)))
 	}
 	
+	pub fn from_native_iter(mc: MutationContext<'gc, '_>, iter: impl NativeIterator<'gc>) -> Self {
+		Value::Iterator(GcCell::allocate(mc, IteratorWrapper::new(iter)))
+	}
+	
 	pub fn get_type(&self) -> Type {
 		match self {
 			Value::Nil => Type::Nil,
@@ -189,9 +226,7 @@ impl<'gc> Value<'gc> {
 			Value::Object(_) => Type::Object,
 			Value::Function(_) => Type::Function,
 			Value::NativeFunction(_) => Type::Function,
-			
-			Value::ListIterator(_) => Type::Iterator,
-			Value::IntIterator(_) => Type::Iterator,
+			Value::Iterator(_) => Type::Iterator,
 		}
 	}
 	
@@ -363,18 +398,12 @@ impl<'gc> Value<'gc> {
 				write!(buf, "}}").unwrap();
 				buf
 			},
-			Value::Function(func) => {
-				format!("<fn 0x{:x}>", Gc::as_ptr(*func) as usize)
-			},
-			Value::NativeFunction(func) => {
-				format!("<fn 0x{:x}>", func.as_ptr() as usize)
-			},
-			Value::ListIterator(iter) => {
-				format!("<iter 0x{:x}>", Gc::as_ptr(*iter) as usize)
-			},
-			Value::IntIterator(iter) => {
-				format!("<iter 0x{:x}>", Gc::as_ptr(*iter) as usize)
-			},
+			Value::Function(func) =>
+				format!("<fn 0x{:x}>", Gc::as_ptr(*func) as usize),
+			Value::NativeFunction(func) =>
+				format!("<fn 0x{:x}>", func.as_ptr() as usize),
+			Value::Iterator(iter) =>
+				format!("<iter 0x{:x}>", iter.as_ptr() as usize),
 		}
 	}
 	
@@ -449,34 +478,22 @@ impl<'gc> Value<'gc> {
 		}
 	}
 	
-	pub fn next(&self, mc: MutationContext<'gc, '_>) -> Result<(Option<Value<'gc>>, Option<Value<'gc>>), String> {
+	pub fn make_iter(&self, mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String> {
 		match self {
 			Value::List(list) => {
-				let iter = Value::ListIterator(Gc::allocate(mc, ListIterator {
-					list: list.read().to_vec(),
-					idx: Cell::new(0),
-				}));
-				let res = iter.next(mc)?.1;
-				Ok((Some(iter), res))
-			}
-			Value::ListIterator(iter) => {
-				if let Some(val) = iter.list.get(iter.idx.get()).cloned() {
-					iter.idx.set(iter.idx.get() + 1);
-					Ok((None, Some(val)))
-				} else {
-					Ok((None, None))
-				}
+				Ok(Some(Value::from_native_iter(mc, ListIterator::new(list.read().clone()))))
 			},
-			Value::IntIterator(iter) => {
-				let next = iter.next.get();
-				if next < iter.until {
-					iter.next.set(next + iter.step);
-					Ok((None, Some(Value::Int(next))))
-				} else {
-					Ok((None, None))
-				}
+			Value::Iterator(_) => Ok(None),
+			_ => Err(format!("Cannot iterate: {}", self.repr())),
+		}
+	}
+	
+	pub fn next(&self, mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String> {
+		match self {
+			Value::Iterator(iter) => {
+				iter.write(mc).iter.next(mc)
 			},
-			_ => Err(format!("Cannot iterate over {}", self.repr())),
+			_ => Err(format!("{} is not an iterator", self.repr())),
 		}
 	}
 }
@@ -522,9 +539,7 @@ impl Hash for Value<'_> {
 			Value::Object(obj) => obj.as_ptr().hash(state),
 			Value::Function(func) => Gc::as_ptr(*func).hash(state),
 			Value::NativeFunction(func) => func.as_ptr().hash(state),
-			
-			Value::ListIterator(iter) => Gc::as_ptr(*iter).hash(state),
-			Value::IntIterator(iter) => Gc::as_ptr(*iter).hash(state),
+			Value::Iterator(iter) => iter.as_ptr().hash(state),
 		}
 	}
 }

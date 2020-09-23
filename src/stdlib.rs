@@ -3,10 +3,11 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::ops::Deref;
 
-use gc_arena::{Gc, MutationContext};
+use gc_arena::{GcCell, MutationContext};
 use once_cell::sync::Lazy;
+use unicode_segmentation::UnicodeSegmentation;
 
-use crate::value::{IntIterator, Type, Value};
+use crate::value::{NativeIterator, Type, Value};
 
 // To avoid writing the same type signature every time
 macro_rules! native_func {
@@ -94,6 +95,26 @@ native_func!(list_pop, mc, args, {
 	}
 });
 
+#[derive(Collect)]
+#[collect(no_drop)]
+struct IntIterator {
+	next: Cell<i32>,
+	until: i32,
+	step: i32,
+}
+
+impl<'gc> NativeIterator<'gc> for IntIterator {
+	fn next(&mut self, _mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String> {
+		let next = self.next.get();
+		if next < self.until {
+			self.next.set(next + self.step);
+			Ok(Some(Value::Int(next)))
+		} else {
+			Ok(None)
+		}
+	}
+}
+
 fn check_range_args(args: &Vec<Value>) -> Result<(Option<i32>, i32, i32), String> {
 	if args.is_empty() || args.len() > 3 {
 		return crate::value::expected("1-3 arguments", &format!("{}", args.len()));
@@ -109,20 +130,28 @@ fn check_range_args(args: &Vec<Value>) -> Result<(Option<i32>, i32, i32), String
 
 native_func!(xrange, mc, args, {
 	let (start, until, step) = check_range_args(&args)?;
-	Ok(Value::IntIterator(Gc::allocate(mc, IntIterator {
+	Ok(Value::from_native_iter(mc, IntIterator {
 		next: Cell::new(start.unwrap_or(0)),
 		until,
 		step
-	})))
+	}))
 });
 
 native_func!(range, mc, args, {
 	let (start, until, step) = check_range_args(&args)?;
-	Ok(Value::IntIterator(Gc::allocate(mc, IntIterator {
+	Ok(Value::from_native_iter(mc, IntIterator {
 		next: Cell::new(start.unwrap_or(1)),
 		until: until + 1,
 		step
-	})))
+	}))
+});
+
+native_func!(str_chars, mc, args, {
+	check_arg_cnt(1, &args)?;
+	let s = args[0].get_string()?;
+	let chars: Vec<Value<'gc>> = s.graphemes(true)
+		.map(|s| Value::from(s.to_string())).collect();
+	Ok(Value::List(GcCell::allocate(mc, chars)))
 });
 
 
@@ -140,10 +169,13 @@ pub static GLOBAL_NAMES: Lazy<HashSet<String>> = Lazy::new(||
 	FUNCTIONS.keys().cloned().collect());
 
 pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|| [
-	(Type::List, [
+	(Type::List, vec![
 		("push", list_push as NativeFn),
 		("insert", list_insert),
 		("pop", list_pop),
+	]),
+	(Type::String, vec![
+		("chars", str_chars as NativeFn),
 	]),
 ].iter().map(|(t,p)| (*t, p.iter().map(|(s,f)| (s.to_string(), *f)).collect())).collect());
 

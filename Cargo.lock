@@ -51,6 +51,7 @@ dependencies = [
  "ordered-float",
  "peg",
  "rustyline",
+ "unicode-segmentation",
  "unicode-xid",
 ]
 

@@ -393,12 +393,12 @@ impl<'gc> VmState<'gc> {
 				obj.set_prop(&idx, val, mc)?;
 			},
 			Instr::Next(iter_reg) => {
-				let iter = self.get_reg(iter_reg)?;
-				let next = iter.next(mc)?;
-				if let Some(new_iter) = next.0 {
+				let mut iter = self.get_reg(iter_reg)?;
+				if let Some(new_iter) = iter.make_iter(mc)? {
 					self.set_reg(iter_reg, new_iter);
+					iter = self.get_reg(iter_reg)?;
 				}
-				if let Some(value) = next.1 {
+				if let Some(value) = iter.next(mc)? {
 					self.stack.push(value);
 					self.stack.push(Value::Bool(true));
 				} else {
