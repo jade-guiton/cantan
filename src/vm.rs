@@ -108,6 +108,13 @@ impl<'gc> VmState<'gc> {
 		}
 	}
 	
+	fn check_end(&mut self) {
+		// Implicit return
+		if self.idx == self.calls.last().unwrap().func.chunk.code.len() {
+			self.return_from_call(true);
+		}
+	}
+	
 	// Warning: does not reset state on errors; callers should not reuse state after error
 	fn execute_instr(&mut self, mc: MutationContext<'gc, '_>) -> Result<(), String> {
 		let func = self.calls.last().unwrap().func;
@@ -286,7 +293,14 @@ impl<'gc> VmState<'gc> {
 						let a = a.get_string().unwrap();
 						let b = b.get_string()?;
 						self.stack.push(Value::String(NiceStr((a.to_string() + &b).into_boxed_str())));
-					}
+					},
+					BinaryOp::Plus if a.get_type() == Type::List => {
+						let a = a.get_list().unwrap();
+						let mut a = a.read().deref().clone();
+						let b = b.get_list()?;
+						a.extend_from_slice(b.read().deref());
+						self.stack.push(Value::List(GcCell::allocate(mc, a)));
+					},
 					BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Times | BinaryOp::Modulo
 							if a.get_type() == Type::Int && b.get_type() == Type::Int => {
 						let a = a.get_int().unwrap();
@@ -411,10 +425,7 @@ impl<'gc> VmState<'gc> {
 			self.idx += 1;
 		}
 		
-		// Implicit return
-		if self.idx == self.calls.last().unwrap().func.chunk.code.len() {
-			self.return_from_call(true);
-		}
+		self.check_end();
 		
 		Ok(())
 	}
@@ -446,6 +457,8 @@ impl<'gc> VmState<'gc> {
 		
 		self.idx = 0;
 		self.jumped = true;
+		
+		self.check_end();
 	}
 	
 	
@@ -461,6 +474,8 @@ impl<'gc> VmState<'gc> {
 		});
 		
 		self.idx = from;
+		
+		self.check_end();
 	}
 }
 

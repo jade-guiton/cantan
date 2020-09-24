@@ -7,7 +7,7 @@ use gc_arena::{GcCell, MutationContext};
 use once_cell::sync::Lazy;
 use unicode_segmentation::UnicodeSegmentation;
 
-use crate::value::{NativeIterator, Type, Value};
+use crate::value::{expected, NativeIterator, Type, Value};
 
 // To avoid writing the same type signature every time
 macro_rules! native_func {
@@ -20,17 +20,9 @@ macro_rules! native_func {
 	($id:ident, $block:block) => { native_func!($id, _mc, _args, $block); };
 }
 
-fn check_arg_cnt(exp: usize, args: &Vec<Value<'_>>) -> Result<(), String> {
-	if args.len() != exp {
-		crate::value::expected(&format!("{} arguments", exp), &format!("{}", args.len()))
-	} else {
-		Ok(())
-	}
-}
-
-fn check_type(exp: Type, val: &Value<'_>) -> Result<(), String> {
-	if val.get_type() != exp {
-		crate::value::expected_type(exp, val)
+fn check_arg_cnt(exp: usize, cnt: usize) -> Result<(), String> {
+	if cnt != exp {
+		expected(&format!("{} arguments", exp), &cnt.to_string())
 	} else {
 		Ok(())
 	}
@@ -48,29 +40,26 @@ native_func!(log, args, {
 });
 
 native_func!(writeln, args, {
-	check_arg_cnt(1, &args)?;
+	check_arg_cnt(1, args.len())?;
 	let val = args[0].get_string()?;
 	println!("{}", val);
 	Ok(Value::Nil)
 });
 
 native_func!(repr, args, {
-	check_arg_cnt(1, &args)?;
+	check_arg_cnt(1, args.len())?;
 	Ok(Value::from(args[0].repr()))
 });
 
 native_func!(list_push, mc, args, {
-	check_arg_cnt(2, &args)?;
-	check_type(Type::List, &args[0])?;
+	check_arg_cnt(1, args.len() - 1)?;
 	let list = args[0].get_list()?;
 	list.write(mc).push(args[1].clone());
 	Ok(Value::Nil)
 });
 
 native_func!(list_insert, mc, args, {
-	check_arg_cnt(3, &args)?;
-	check_type(Type::List, &args[0])?;
-	check_type(Type::Int, &args[2])?;
+	check_arg_cnt(2, args.len() - 1)?;
 	let list = args[0].get_list()?;
 	let len = list.read().len();
 	let idx = args[2].get_int()?;
@@ -84,8 +73,7 @@ native_func!(list_insert, mc, args, {
 });
 
 native_func!(list_pop, mc, args, {
-	check_arg_cnt(1, &args)?;
-	check_type(Type::List, &args[0])?;
+	check_arg_cnt(0, args.len() - 1)?;
 	let list = args[0].get_list()?;
 	let mut list = list.write(mc);
 	if let Some(val) = list.pop() {
@@ -93,6 +81,43 @@ native_func!(list_pop, mc, args, {
 	} else {
 		Err(String::from("Cannot pop empty list"))
 	}
+});
+
+native_func!(list_len, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let list = args[0].get_list()?;
+	let len = i32::try_from(list.read().len())
+		.map_err(|_| String::from("List length does not fit in integer"))?;
+	Ok(Value::Int(len))
+});
+
+fn wrap_index(idx: i32, len: usize) -> Option<usize> {
+	if idx >= 0 {
+		Some(idx as usize)
+	} else if -idx as usize <= len {
+		Some(len - (-idx as usize))
+	} else {
+		None
+	}
+}
+
+native_func!(list_sub, mc, args, {
+	if args.len() < 2 || args.len() > 3 {
+		return expected("1/2 arguments", &(args.len() - 1).to_string());
+	}
+	let list = args[0].get_list()?;
+	let list = list.read();
+	let start = args[1].get_int()?;
+	let start2 = wrap_index(start, list.len());
+	let end = args.get(2).map(|v| v.get_int()).transpose()?;
+	let end2 = end.map(|idx| wrap_index(idx, list.len()))
+		.unwrap_or_else(|| Some(list.len()));
+	let sub = start2.and_then(|start| end2.and_then(|end| list.get(start..end)))
+		.ok_or_else(||
+			format!("Cannot take sublist {}..{} of list of length {}",
+				start, end.map(|i| i.to_string()).unwrap_or(String::new()), list.len())
+		)?.to_vec();
+	Ok(Value::List(GcCell::allocate(mc, sub)))
 });
 
 #[derive(Collect)]
@@ -117,7 +142,7 @@ impl<'gc> NativeIterator<'gc> for IntIterator {
 
 fn check_range_args(args: &Vec<Value>) -> Result<(Option<i32>, i32, i32), String> {
 	if args.is_empty() || args.len() > 3 {
-		return crate::value::expected("1-3 arguments", &format!("{}", args.len()));
+		return expected("1-3 arguments", &args.len().to_string());
 	}
 	let (start, until) = if args.len() == 1 {
 		(None, args[0].get_int()?)
@@ -147,7 +172,7 @@ native_func!(range, mc, args, {
 });
 
 native_func!(str_chars, mc, args, {
-	check_arg_cnt(1, &args)?;
+	check_arg_cnt(0, args.len() - 1)?;
 	let s = args[0].get_string()?;
 	let chars: Vec<Value<'gc>> = s.graphemes(true)
 		.map(|s| Value::from(s.to_string())).collect();
@@ -173,6 +198,8 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("push", list_push as NativeFn),
 		("insert", list_insert),
 		("pop", list_pop),
+		("len", list_len),
+		("sub", list_sub),
 	]),
 	(Type::String, vec![
 		("chars", str_chars as NativeFn),
