@@ -153,7 +153,20 @@ impl fmt::Debug for IteratorWrapper<'_> {
 	}
 }
 
+pub enum ImmutSequence<'gc, 'seq> {
+	Tuple(Gc<'gc, Vec<Value<'gc>>>),
+	List(std::cell::Ref<'seq, Vec<Value<'gc>>>),
+}
 
+impl<'gc, 'seq> Deref for ImmutSequence<'gc, 'seq> {
+	type Target = [Value<'gc>];
+	fn deref(&self) -> &[Value<'gc>] {
+		match self {
+			ImmutSequence::Tuple(tuple) => tuple.deref(),
+			ImmutSequence::List(list) => list.deref(),
+		}
+	}
+}
 
 #[derive(Clone, Debug, Collect)]
 #[collect(no_drop)]
@@ -233,6 +246,15 @@ impl<'gc> Value<'gc> {
 	get_prim!(get_bool, bool, Bool);
 	get_prim!(get_int, i32, Int);
 	get_prim!(get_list, GcCell<'gc, Vec<Value<'gc>>>, List);
+	get_prim!(get_tuple, Gc<'gc, Vec<Value<'gc>>>, Tuple);
+	
+	pub fn get_sequence<'a>(&'a self) -> Result<ImmutSequence<'gc, 'a>, String> {
+		match self {
+			Value::Tuple(tuple) => Ok(ImmutSequence::Tuple(*tuple)),
+			Value::List(list) => Ok(ImmutSequence::List(list.read())),
+			_ => expected_types("Tuple/List", self),
+		}
+	}
 	
 	pub fn get_string(&self) -> Result<String, String> {
 		if let Value::String(s) = self {

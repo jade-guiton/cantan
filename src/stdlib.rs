@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::ops::Deref;
 
-use gc_arena::{GcCell, MutationContext};
+use gc_arena::{Gc, GcCell, MutationContext};
 use once_cell::sync::Lazy;
 use unicode_segmentation::UnicodeSegmentation;
 
@@ -51,6 +51,52 @@ native_func!(repr, args, {
 	Ok(Value::from(args[0].repr()))
 });
 
+native_func!(seq_len, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let seq = args[0].get_sequence()?;
+	let len = i32::try_from(seq.len())
+		.map_err(|_| String::from("Sequence length does not fit in integer"))?;
+	Ok(Value::Int(len))
+});
+
+fn wrap_index(idx: i32, len: usize) -> Option<usize> {
+	if idx >= 0 {
+		Some(idx as usize)
+	} else if -idx as usize <= len {
+		Some(len - (-idx as usize))
+	} else {
+		None
+	}
+}
+
+native_func!(seq_sub, mc, args, {
+	if args.len() < 2 || args.len() > 3 {
+		return expected("1/2 arguments", &(args.len() - 1).to_string());
+	}
+	let seq = args[0].get_sequence()?;
+	let start = args[1].get_int()?;
+	let start2 = wrap_index(start, seq.len());
+	let end = args.get(2).map(|v| v.get_int()).transpose()?;
+	let end2 = end.map(|idx| wrap_index(idx, seq.len()))
+		.unwrap_or_else(|| Some(seq.len()));
+	let sub = start2.and_then(|start| end2.and_then(|end| seq.get(start..end)))
+		.ok_or_else(||
+			format!("Cannot take sublist {}..{} of sequence of length {}",
+				start, end.map(|i| i.to_string()).unwrap_or(String::new()), seq.len())
+		)?.to_vec();
+	match &args[0] {
+		Value::Tuple(_) => Ok(Value::Tuple(Gc::allocate(mc, sub))),
+		Value::List(_) => Ok(Value::List(GcCell::allocate(mc, sub))),
+		_ => unimplemented!(),
+	}
+});
+
+native_func!(tuple_to_list, mc, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let tuple = args[0].get_tuple()?;
+	Ok(Value::List(GcCell::allocate(mc, tuple.deref().clone())))
+});
+
 native_func!(list_push, mc, args, {
 	check_arg_cnt(1, args.len() - 1)?;
 	let list = args[0].get_list()?;
@@ -83,41 +129,11 @@ native_func!(list_pop, mc, args, {
 	}
 });
 
-native_func!(list_len, args, {
+native_func!(list_to_tuple, mc, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let list = args[0].get_list()?;
-	let len = i32::try_from(list.read().len())
-		.map_err(|_| String::from("List length does not fit in integer"))?;
-	Ok(Value::Int(len))
-});
-
-fn wrap_index(idx: i32, len: usize) -> Option<usize> {
-	if idx >= 0 {
-		Some(idx as usize)
-	} else if -idx as usize <= len {
-		Some(len - (-idx as usize))
-	} else {
-		None
-	}
-}
-
-native_func!(list_sub, mc, args, {
-	if args.len() < 2 || args.len() > 3 {
-		return expected("1/2 arguments", &(args.len() - 1).to_string());
-	}
-	let list = args[0].get_list()?;
 	let list = list.read();
-	let start = args[1].get_int()?;
-	let start2 = wrap_index(start, list.len());
-	let end = args.get(2).map(|v| v.get_int()).transpose()?;
-	let end2 = end.map(|idx| wrap_index(idx, list.len()))
-		.unwrap_or_else(|| Some(list.len()));
-	let sub = start2.and_then(|start| end2.and_then(|end| list.get(start..end)))
-		.ok_or_else(||
-			format!("Cannot take sublist {}..{} of list of length {}",
-				start, end.map(|i| i.to_string()).unwrap_or(String::new()), list.len())
-		)?.to_vec();
-	Ok(Value::List(GcCell::allocate(mc, sub)))
+	Ok(Value::Tuple(Gc::allocate(mc, list.deref().clone())))
 });
 
 #[derive(Collect)]
@@ -194,12 +210,18 @@ pub static GLOBAL_NAMES: Lazy<HashSet<String>> = Lazy::new(||
 	FUNCTIONS.keys().cloned().collect());
 
 pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|| [
+	(Type::Tuple, vec![
+		("len", seq_len as NativeFn),
+		("sub", seq_sub),
+		("to_list", tuple_to_list),
+	]),
 	(Type::List, vec![
 		("push", list_push as NativeFn),
 		("insert", list_insert),
 		("pop", list_pop),
-		("len", list_len),
-		("sub", list_sub),
+		("len", seq_len),
+		("sub", seq_sub),
+		("to_tuple", list_to_tuple),
 	]),
 	(Type::String, vec![
 		("chars", str_chars as NativeFn),
