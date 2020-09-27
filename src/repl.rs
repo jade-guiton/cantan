@@ -1,3 +1,4 @@
+
 use std::io::{self, Write};
 use std::rc::Rc;
 
@@ -5,27 +6,23 @@ use rustyline::{Editor, error::ReadlineError};
 
 use crate::ast::Statement;
 use crate::colors::*;
-use crate::compiler::{BlockType, FunctionContext};
+use crate::compiler::InteractiveContext;
 use crate::grammar::parse_partial_stat;
-use crate::vm::ReplVm;
 use crate::print_err;
+use crate::vm::InteractiveVm;
 
 pub struct Repl {
-	func_ctx: FunctionContext<'static>,
-	code_idx: usize,
-	vm: ReplVm,
+	inter_ctx: InteractiveContext,
+	vm: InteractiveVm,
 	show_bytecode: bool,
 	rl: rustyline::Editor<()>,
 }
 
 impl Repl {
 	pub fn new(show_bytecode: bool) -> Self {
-		let mut func_ctx = FunctionContext::new(vec![], None).unwrap();
-		func_ctx.start_block(BlockType::FunctionMain);
 		Repl {
-			func_ctx,
-			code_idx: 0,
-			vm: ReplVm::new(),
+			inter_ctx: InteractiveContext::new(),
+			vm: InteractiveVm::new(),
 			show_bytecode,
 			rl: Editor::<()>::with_config(rustyline::Config::builder()
 				.auto_add_history(true).build()),
@@ -76,34 +73,28 @@ impl Repl {
 		}
 	}
 	
-	fn compile_stat(&mut self, stat: Statement) -> Result<(), String> {
-		if let Statement::ExprStat(expr) = stat {
-			self.func_ctx.compile_expression(expr)
-				.map(|()| self.func_ctx.add_log())
-		} else {
-			self.func_ctx.compile_statement(stat)
-		}
-	}
-	
-	fn run_stat(&mut self, stat: Statement) {
-		let old_ctx = self.func_ctx.clone();
-		if let Err(err) = self.compile_stat(stat) {
-			print_err(&err);
-			self.func_ctx = old_ctx; // Roll back compiler state
-			return;
-		}
+	fn run_stat(&mut self, stat: Statement) -> Result<(), String> {
 		
-		let code_end = self.func_ctx.func.code.len();
+		let mut func_ctx = self.inter_ctx.make_func_ctx();
+		
+		if let Statement::ExprStat(expr) = stat {
+			func_ctx.compile_expression(expr)?;
+			func_ctx.add_log();
+		} else {
+			func_ctx.compile_statement(stat)?;
+		}
 		
 		if self.show_bytecode {
-			println!(": {:?}", &self.func_ctx.func.code[self.code_idx..code_end]);
+			println!(": {:?}", &func_ctx.func.code);
 		}
 		
-		if let Err(err) = self.vm.execute_from(Rc::new(self.func_ctx.func.clone()), self.code_idx) {
-			print_err(&err);
-		}
+		self.vm.execute_function(Rc::new(func_ctx.func.clone()))?;
 		
-		self.code_idx = code_end;
+		// If compilation and execution were successful,
+		// store global context changes for next instruction
+		self.inter_ctx.apply_func_ctx(func_ctx);
+		
+		Ok(())
 	}
 
 	pub fn start(&mut self) {
@@ -114,7 +105,9 @@ impl Repl {
 		println!();
 		
 		while let Some(stat) = self.read_statement() {
-			self.run_stat(stat);
+			if let Err(err) = self.run_stat(stat) {
+				print_err(&err);
+			}
 			println!();
 		}
 		

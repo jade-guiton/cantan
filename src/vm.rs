@@ -430,8 +430,8 @@ impl<'gc> VmState<'gc> {
 		Ok(())
 	}
 	
-	// Like execute_instr, but clears calls and the stack on errors (not registers)
-	// Using this, VmState can be reused in interactive mode even on error
+	// Like execute_instr, but clears calls and the stack on errors, but not registers
+	// Using this, VmState can be reused in interactive mode even after error
 	fn execute_instr_safe(&mut self, mc: MutationContext<'gc, '_>) -> Result<(), String> {
 		match self.execute_instr(mc) {
 			Ok(()) => Ok(()),
@@ -462,10 +462,10 @@ impl<'gc> VmState<'gc> {
 	}
 	
 	
-	// Runs function at top level in interactive mode from a given index
-	// This function can be called multiple times with new versions of the same function
+	// Runs function at top level in "interactive mode"
+	// This means that the function's registers won't be dropped after its execution
 	// Used in REPL
-	fn run_interactive(&mut self, mc: MutationContext<'gc, '_>, func: Rc<CompiledFunction>, from: usize) {
+	fn run_interactive(&mut self, mc: MutationContext<'gc, '_>, func: Rc<CompiledFunction>) {
 		self.calls.push(Call {
 			func: Gc::allocate(mc, Function::main(func)),
 			interactive: true,
@@ -473,7 +473,7 @@ impl<'gc> VmState<'gc> {
 			return_idx: 0,
 		});
 		
-		self.idx = from;
+		self.idx = 0;
 		
 		self.check_end();
 	}
@@ -484,20 +484,20 @@ fn new_arena() -> VmArena {
 		|mc| GcCell::allocate(mc, VmState::new()))
 }
 
-pub struct ReplVm {
+pub struct InteractiveVm {
 	arena: VmArena,
 }
 
-impl ReplVm {
+impl InteractiveVm {
 	pub fn new() -> Self {
-		let mut vm = ReplVm { arena: new_arena() };
+		let mut vm = InteractiveVm { arena: new_arena() };
 		vm.arena.mutate(|mc, state| state.write(mc).init_globals(mc));
 		vm
 	}
 	
-	pub fn execute_from(&mut self, func: Rc<CompiledFunction>, from: usize) -> Result<(), String>  {
+	pub fn execute_function(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
 		self.arena.mutate(|mc, state| {
-			state.write(mc).run_interactive(mc, func, from);
+			state.write(mc).run_interactive(mc, func);
 		});
 		while self.arena.root.read().has_call() {
 			self.arena.mutate(|mc, state| state.write(mc).execute_instr_safe(mc))?

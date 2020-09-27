@@ -38,6 +38,44 @@ pub struct FunctionContext<'a> {
 	stack_size: usize,
 }
 
+pub struct InteractiveContext {
+	used_regs: IntSet<u16>,
+	locals: HashMap<String, u16>,
+}
+
+impl InteractiveContext {
+	pub fn new() -> Self {
+		InteractiveContext {
+			used_regs: IntSet::new(),
+			locals: HashMap::new(),
+		}
+	}
+	
+	pub fn make_func_ctx(&self) -> FunctionContext<'static> {
+		FunctionContext {
+			parent: None,
+			func: CompiledFunction::new(0),
+			arg_names: vec![],
+			used_regs: self.used_regs.clone(),
+			blocks: vec![
+				BlockContext {
+					breakable: false, breaks: vec![], continues: vec![],
+					locals: self.locals.clone(),
+				}
+			],
+			cur_def: None,
+			upvalues: vec![],
+			stack_size: 0,
+		}
+	}
+	
+	pub fn apply_func_ctx(&mut self, func_ctx: FunctionContext<'static>) {
+		let FunctionContext { used_regs, mut blocks, .. } = func_ctx;
+		self.used_regs = used_regs;
+		self.locals = blocks.remove(0).locals;
+	}
+}
+
 impl<'a> FunctionContext<'a> {
 	pub fn new(arg_names: Vec<String>, parent: Option<&'a FunctionContext<'a>>) -> Result<Self, String> {
 		let arg_cnt = u16::try_from(arg_names.len())
