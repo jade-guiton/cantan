@@ -247,6 +247,7 @@ impl<'gc> Value<'gc> {
 	get_prim!(get_int, i32, Int);
 	get_prim!(get_list, GcCell<'gc, Vec<Value<'gc>>>, List);
 	get_prim!(get_tuple, Gc<'gc, Vec<Value<'gc>>>, Tuple);
+	get_prim!(get_iter, GcCell<'gc, IteratorWrapper<'gc>>, Iterator);
 	
 	pub fn get_sequence<'a>(&'a self) -> Result<ImmutSequence<'gc, 'a>, String> {
 		match self {

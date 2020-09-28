@@ -1,11 +1,12 @@
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
+use std::iter::Iterator;
 use std::ops::Deref;
 
-use gc_arena::{Gc, GcCell, MutationContext};
+use gc_arena::{Collect, Gc, GcCell, MutationContext};
 use once_cell::sync::Lazy;
-use unicode_segmentation::UnicodeSegmentation;
+use unicode_segmentation::GraphemeCursor;
 
 use crate::value::{expected, NativeIterator, Type, Value};
 
@@ -51,7 +52,7 @@ native_func!(repr, args, {
 	Ok(Value::from(args[0].repr()))
 });
 
-native_func!(seq_len, args, {
+native_func!(seq_size, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let seq = args[0].get_sequence()?;
 	let len = i32::try_from(seq.len())
@@ -89,6 +90,11 @@ native_func!(seq_sub, mc, args, {
 		Value::List(_) => Ok(Value::List(GcCell::allocate(mc, sub))),
 		_ => unimplemented!(),
 	}
+});
+
+native_func!(seq_to_iter, mc, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	args[0].make_iter(mc).transpose().unwrap()
 });
 
 native_func!(tuple_to_list, mc, args, {
@@ -187,12 +193,94 @@ native_func!(range, mc, args, {
 	}))
 });
 
+struct CharIterator {
+	string: String,
+	offset: usize,
+	cursor: GraphemeCursor,
+}
+static_collect!(CharIterator);
+
+impl CharIterator {
+	fn new(string: String) -> Self {
+		let len = string.len();
+		CharIterator {
+			string,
+			offset: 0,
+			cursor: GraphemeCursor::new(0, len, true)
+		}
+	}
+}
+
+impl<'gc> NativeIterator<'gc> for CharIterator {
+	fn next(&mut self, _mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String> {
+		let next = self.cursor.next_boundary(&self.string, 0)
+			.map_err(|_| String::from("Error during iteration over string"))?;
+		match next {
+			Some(next) => {
+				let val = Value::from(self.string[self.offset .. next].to_string());
+				self.offset = next;
+				Ok(Some(val))
+			},
+			None => Ok(None),
+		}
+	}
+}
+
 native_func!(str_chars, mc, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let s = args[0].get_string()?;
-	let chars: Vec<Value<'gc>> = s.graphemes(true)
-		.map(|s| Value::from(s.to_string())).collect();
-	Ok(Value::List(GcCell::allocate(mc, chars)))
+	Ok(Value::from_native_iter(mc, CharIterator::new(s)))
+});
+
+native_func!(iter_join, mc, args, {
+	if args.len() > 2 {
+		return expected("0/1 arguments", &(args.len() - 1).to_string());
+	}
+	let iter = args[0].get_iter()?;
+	let mut iter = iter.write(mc);
+	let sep = if args.len() == 2 {
+		Some(args[1].get_string()?)
+	} else {
+		None
+	};
+	
+	let mut buf = String::new();
+	let mut first = true;
+	while let Some(val) = iter.iter.next(mc)? {
+		if first {
+			first = false;
+		} else if let Some(ref sep) = sep {
+			buf += &sep;
+		}
+		buf += &val.get_string()?;
+	}
+	
+	Ok(Value::from(buf))
+});
+
+native_func!(iter_to_list, mc, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let iter = args[0].get_iter()?;
+	let mut iter = iter.write(mc);
+	
+	let mut values = vec![];
+	while let Some(val) = iter.iter.next(mc)? {
+		values.push(val);
+	}
+	
+	Ok(Value::List(GcCell::allocate(mc, values)))
+});
+native_func!(iter_to_tuple, mc, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let iter = args[0].get_iter()?;
+	let mut iter = iter.write(mc);
+	
+	let mut values = vec![];
+	while let Some(val) = iter.iter.next(mc)? {
+		values.push(val);
+	}
+	
+	Ok(Value::Tuple(Gc::allocate(mc, values)))
 });
 
 
@@ -211,21 +299,28 @@ pub static GLOBAL_NAMES: Lazy<HashSet<String>> = Lazy::new(||
 
 pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|| [
 	(Type::Tuple, vec![
-		("len", seq_len as NativeFn),
+		("size", seq_size as NativeFn),
 		("sub", seq_sub),
+		("to_iter", seq_to_iter),
 		("to_list", tuple_to_list),
 	]),
 	(Type::List, vec![
 		("push", list_push as NativeFn),
 		("insert", list_insert),
 		("pop", list_pop),
-		("len", seq_len),
+		("size", seq_size),
 		("sub", seq_sub),
+		("to_iter", seq_to_iter),
 		("to_tuple", list_to_tuple),
 	]),
 	(Type::String, vec![
 		("chars", str_chars as NativeFn),
 	]),
+	(Type::Iterator, vec![
+		("join", iter_join as NativeFn),
+		("to_list", iter_to_list),
+		("to_tuple", iter_to_tuple),
+	])
 ].iter().map(|(t,p)| (*t, p.iter().map(|(s,f)| (s.to_string(), *f)).collect())).collect());
 
 pub fn create<'gc>(globals: &mut HashMap<String, Value<'gc>>, mc: MutationContext<'gc, '_>) {

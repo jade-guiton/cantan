@@ -47,9 +47,9 @@ peg::parser! {
 			/ "while" _ c:pexpr() _ b:block() _ "end" wb() { Statement::While(c, b) }
 			/ "do" wb() _ b:block() _ "while" c:pexpr() { Statement::DoWhile(b, c) }
 			/ "loop" wb() _ b:block() _ "end" wb() { Statement::Loop(b) }
-			/ "for" "(" _ i:id() _ "in" wb() _ e:expr() _ ")" _ b:block() _ "end" wb() { Statement::For(i,e,b) }
-			/ "break" c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
-			/ "continue" c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }
+			/ "for" _ "(" _ i:id() _ "in" wb() _ e:expr() _ ")" _ b:block() _ "end" wb() { Statement::For(i,e,b) }
+			/ "break" _ c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
+			/ "continue" _ c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }
 			/ "ret" wb() _ "(" _ e:expr()? _ ")" { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
 			/ l:lexpr() _ op:assign_op() _ e:expr() {
 				if let Some(op) = op {
