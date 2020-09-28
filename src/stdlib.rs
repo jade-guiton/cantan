@@ -283,6 +283,18 @@ native_func!(iter_to_tuple, mc, args, {
 	Ok(Value::Tuple(Gc::allocate(mc, values)))
 });
 
+native_func!(iter_next, mc, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let iter = args[0].get_iter()?;
+	let mut iter = iter.write(mc);
+	
+	let res = match iter.iter.next(mc)? {
+		Some(val) => vec![Value::Bool(true), val],
+		None => vec![Value::Bool(false)],
+	};
+	Ok(Value::Tuple(Gc::allocate(mc, res)))
+});
+
 
 type NativeFn = for<'gc> fn(MutationContext<'gc, '_>, Vec<Value<'gc>>) -> Result<Value<'gc>, String>;
 
@@ -320,6 +332,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("join", iter_join as NativeFn),
 		("to_list", iter_to_list),
 		("to_tuple", iter_to_tuple),
+		("next", iter_next),
 	])
 ].iter().map(|(t,p)| (*t, p.iter().map(|(s,f)| (s.to_string(), *f)).collect())).collect());
 
