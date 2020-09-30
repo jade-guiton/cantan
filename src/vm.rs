@@ -16,7 +16,7 @@ struct Call<'gc> {
 	func: Gc<'gc, Function<'gc>>,
 	interactive: bool,
 	reg_base: usize,
-	return_idx: usize,
+	return_idx: Option<usize>,
 }
 
 #[derive(Collect)]
@@ -99,12 +99,15 @@ impl<'gc> VmState<'gc> {
 	fn return_from_call(&mut self, implicit: bool) {
 		let call = self.calls.pop().unwrap();
 		if !call.interactive { // If in interactive mode, keep rest of state for next call
-			self.idx = call.return_idx;
-			self.registers.truncate(call.reg_base);
-			self.jumped = true;
 			if implicit {
 				self.stack.push(Value::Nil)
 			}
+			self.registers.truncate(call.reg_base);
+		}
+		
+		if let Some(idx) = self.calls.last_mut().and_then(|c| c.return_idx.take()) {
+			self.idx = idx;
+			self.jumped = true;
 		}
 	}
 	
@@ -237,7 +240,7 @@ impl<'gc> VmState<'gc> {
 						if args.len() != chunk2.arg_cnt as usize {
 							return Err(format!("Expected {} arguments, got {}", chunk2.arg_cnt, args.len()));
 						}
-						self.call_function(func2, args);
+						self.call_function(func2, args, false);
 					},
 					Value::NativeFunction(func2) => {
 						self.stack.push(func2.write(mc).call(mc, args)?);
@@ -443,12 +446,16 @@ impl<'gc> VmState<'gc> {
 		}
 	}
 	
-	fn call_function(&mut self, func: Gc<'gc, Function<'gc>>, mut args: Vec<Value<'gc>>) {
+	fn call_function(&mut self, func: Gc<'gc, Function<'gc>>, mut args: Vec<Value<'gc>>, no_return: bool) {
+		if !no_return {
+			let last = self.calls.last_mut().unwrap();
+			last.return_idx = Some(self.idx + 1);
+		}
 		self.calls.push(Call {
 			func,
 			interactive: false,
 			reg_base: self.registers.len(),
-			return_idx: self.idx + 1,
+			return_idx: None,
 		});
 		
 		for (i, arg) in args.drain(..).enumerate() {
@@ -461,7 +468,6 @@ impl<'gc> VmState<'gc> {
 		self.check_end();
 	}
 	
-	
 	// Runs function at top level in "interactive mode"
 	// This means that the function's registers won't be dropped after its execution
 	// Used in REPL
@@ -470,7 +476,7 @@ impl<'gc> VmState<'gc> {
 			func: Gc::allocate(mc, Function::main(func)),
 			interactive: true,
 			reg_base: 0,
-			return_idx: 0,
+			return_idx: None,
 		});
 		
 		self.idx = 0;
@@ -510,7 +516,7 @@ pub fn execute_function(func: Rc<CompiledFunction>) -> Result<(), String>  {
 	let mut arena = new_arena();
 	arena.mutate(|mc, state| {
 		state.write(mc).init_globals(mc);
-		state.write(mc).call_function(Gc::allocate(mc, Function::main(func)), vec![]);
+		state.write(mc).call_function(Gc::allocate(mc, Function::main(func)), vec![], true);
 	});
 	while arena.root.read().has_call() {
 		arena.mutate(|mc, state| state.write(mc).execute_instr(mc))?;
