@@ -27,8 +27,8 @@ pub struct VmState<'gc> {
 	registers: Vec<Value<'gc>>,
 	stack: Vec<Value<'gc>>,
 	upvalues: HashMap<usize, GcCell<'gc, Upvalue<'gc>>>,
+	reg_base: usize,
 	idx: usize,
-	jumped: bool,
 }
 
 type MutVmState<'gc> = GcCell<'gc, VmState<'gc>>;
@@ -43,8 +43,8 @@ impl<'gc> VmState<'gc> {
 			registers: vec![],
 			stack: vec![],
 			upvalues: HashMap::new(),
+			reg_base: 0,
 			idx: 0,
-			jumped: false
 		}
 	}
 	
@@ -53,20 +53,69 @@ impl<'gc> VmState<'gc> {
 	}
 	
 	fn set_reg(&mut self, reg: u16, val: Value<'gc>) {
-		let reg = self.calls.last().unwrap().reg_base + reg as usize;
+		let reg = self.reg_base + reg as usize;
 		if reg >= self.registers.len() {
 			self.registers.resize(reg + 1, Value::Nil);
 		}
 		self.registers[reg] = val;
 	}
 	
-	fn get_reg(&self, reg: u16) -> Result<&Value<'gc>, String> {
-		let reg = self.calls.last().unwrap().reg_base + reg as usize;
+	fn get_raw_reg(&self, reg: usize) -> Result<&Value<'gc>, String> {
 		self.registers.get(reg)
 			.ok_or_else(|| String::from("Accessing uninitialized register"))
 	}
 	
-	fn pop(&mut self) -> Result<Value<'gc>, String> {
+	fn get_reg(&self, reg: u16) -> Result<&Value<'gc>, String> {
+		let reg = self.reg_base + reg as usize;
+		self.get_raw_reg(reg)
+	}
+	
+	fn close_reg_raw(&mut self, mc: MutationContext<'gc, '_>, reg: usize) {
+		if let Some(cell) = self.upvalues.remove(&reg) {
+			let val = self.registers[reg].clone();
+			*cell.write(mc) = Upvalue::Closed(val);
+		}
+	}
+	
+	fn drop_reg(&mut self, mc: MutationContext<'gc, '_>, reg: u16) {
+		let reg = self.reg_base + reg as usize;
+		self.close_reg_raw(mc, reg);
+		
+		if reg == self.registers.len() - 1 {
+			self.registers.pop();
+		} else {
+			self.registers[reg] = Value::Nil;
+		}
+	}
+	
+	fn get_upv(&self, upv: &Upvalue<'gc>) -> Result<Value<'gc>, String> {
+		match upv {
+			Upvalue::Open(reg) => Ok(self.get_raw_reg(*reg as usize)?.clone()),
+			Upvalue::Closed(val) => Ok(val.clone()),
+		}
+	}
+	
+	fn make_upv(&mut self, mc: MutationContext<'gc, '_>, reg: u16) -> GcCell<'gc, Upvalue<'gc>> {
+		let reg = self.reg_base + reg as usize;
+		if let Some(upv) = self.upvalues.get(&reg) {
+			*upv
+		} else {
+			let upv = GcCell::allocate(mc, Upvalue::Open(reg));
+			self.upvalues.insert(reg, upv);
+			upv
+		}
+	}
+	
+	pub fn get_global(&self, name: &str) -> Result<Value<'gc>, String> {
+		self.globals.get(name).cloned()
+			.ok_or_else(|| format!("Accessing undefined global '{}'", name))
+	}
+	
+	pub fn push(&mut self, val: Value<'gc>) {
+		self.stack.push(val);
+	}
+	
+	pub fn pop(&mut self) -> Result<Value<'gc>, String> {
 		self.stack.pop()
 			.ok_or_else(|| String::from("Popping from empty stack"))
 	}
@@ -83,39 +132,61 @@ impl<'gc> VmState<'gc> {
 		Ok(cst.clone_prim())
 	}
 	
-	fn has_call(&self) -> bool {
-		!self.calls.is_empty()
-	}
-	
 	fn jump(&mut self, rel: i16) {
 		if rel <= 0 {
 			self.idx -= -rel as usize;
 		} else {
 			self.idx += rel as usize;
 		}
-		self.jumped = true;
 	}
 	
-	fn return_from_call(&mut self, implicit: bool) {
+	fn call_function(&mut self, func: Gc<'gc, Function<'gc>>, mut args: Vec<Value<'gc>>, no_return: bool) {
+		if !no_return {
+			let last = self.calls.last_mut().unwrap();
+			last.return_idx = Some(self.idx + 1);
+		}
+		let reg_base = self.registers.len();
+		self.reg_base = reg_base;
+		self.calls.push(Call {
+			func,
+			interactive: false,
+			reg_base,
+			return_idx: None,
+		});
+		
+		for (i, arg) in args.drain(..).enumerate() {
+			self.set_reg(i as u16, arg);
+		}
+		
+		self.idx = 0;
+	}
+	
+	fn return_from_call(&mut self, mc: MutationContext<'gc, '_>, implicit: bool) {
 		let call = self.calls.pop().unwrap();
 		if !call.interactive { // If in interactive mode, keep rest of state for next call
 			if implicit {
-				self.stack.push(Value::Nil)
+				self.push(Value::Nil)
+			}
+			for reg in call.reg_base .. self.registers.len() {
+				self.close_reg_raw(mc, reg);
 			}
 			self.registers.truncate(call.reg_base);
 		}
 		
-		if let Some(idx) = self.calls.last_mut().and_then(|c| c.return_idx.take()) {
-			self.idx = idx;
-			self.jumped = true;
+		if let Some(call) = self.calls.last_mut() {
+			if let Some(idx) = call.return_idx.take() {
+				self.idx = idx;
+			}
+			self.reg_base = call.reg_base;
 		}
 	}
 	
-	fn check_end(&mut self) {
+	pub fn check_end(&mut self, mc: MutationContext<'gc, '_>, base_call: usize) -> bool {
 		// Implicit return
-		if self.idx == self.calls.last().unwrap().func.chunk.code.len() {
-			self.return_from_call(true);
+		while self.calls.len() > base_call && self.idx == self.calls.last().unwrap().func.chunk.code.len() {
+			self.return_from_call(mc, true);
 		}
+		self.calls.len() == base_call
 	}
 	
 	// Warning: does not reset state on errors; callers should not reuse state after error
@@ -125,29 +196,22 @@ impl<'gc> VmState<'gc> {
 			.ok_or_else(|| String::from("Jumped to invalid instruction"))?
 			.clone();
 		
-		self.jumped = false;
+		let mut jumped = false;
 		
 		match instr {
 			Instr::Load(reg) => {
 				let val = self.get_reg(reg)?.clone();
-				self.stack.push(val);
+				self.push(val);
 			},
 			Instr::LoadUpv(upv_idx) => {
 				let upv = func.upvalues.get(upv_idx as usize)
 					.ok_or_else(|| String::from("Invalid upvalue index"))?;
-				let val = match upv.read().deref() {
-					Upvalue::Open(reg) => self.registers.get(*reg as usize)
-						.ok_or_else(|| String::from("Upvalue points to invalid register"))?
-						.clone(),
-					Upvalue::Closed(val) => val.clone(),
-				};
-				self.stack.push(val);
+				self.push(self.get_upv(&upv.read())?);
 			},
 			Instr::LoadGlobal(name_idx) => {
 				let name = self.get_cst(&func.chunk, name_idx)?.get_string()?;
-				let val = self.globals.get(name.deref())
-					.ok_or_else(|| format!("Accessing undefined global '{}'", name.deref()))?;
-				self.stack.push(val.clone());
+				let val = self.get_global(&name)?;
+				self.push(val);
 			},
 			Instr::Store(reg) => {
 				let val = self.pop()?;
@@ -169,19 +233,7 @@ impl<'gc> VmState<'gc> {
 				};
 			},
 			Instr::Drop(reg) => {
-				let reg = self.calls.last().unwrap().reg_base + reg as usize;
-				
-				// Close upvalue
-				if let Some(cell) = self.upvalues.remove(&reg) {
-					let val = self.registers[reg].clone();
-					*cell.write(mc) = Upvalue::Closed(val);
-				}
-				
-				if reg == self.registers.len() - 1 {
-					self.registers.pop();
-				} else {
-					self.registers[reg] = Value::Nil;
-				}
+				self.drop_reg(mc, reg);
 			},
 			Instr::Discard => {
 				self.pop()?;
@@ -191,17 +243,20 @@ impl<'gc> VmState<'gc> {
 			},
 			Instr::Jump(rel) => {
 				self.jump(rel);
+				jumped = true;
 			},
 			Instr::JumpIf(rel) => {
 				let val = self.pop()?;
 				if val.get_bool()? {
 					self.jump(rel);
+					jumped = true;
 				}
 			},
 			Instr::JumpIfNot(rel) => {
 				let val = self.pop()?;
 				if !val.get_bool()? {
 					self.jump(rel);
+					jumped = true;
 				}
 			},
 			Instr::NewFunction(func_idx) => {
@@ -212,14 +267,7 @@ impl<'gc> VmState<'gc> {
 				for upv in &chunk2.upvalues {
 					match upv {
 						CompiledUpvalue::Direct(reg) => {
-							let reg = self.calls.last().unwrap().reg_base + *reg as usize;
-							if let Some(upv) = self.upvalues.get(&reg) {
-								upvalues.push(*upv);
-							} else {
-								let upv = GcCell::allocate(mc, Upvalue::Open(reg));
-								self.upvalues.insert(reg, upv);
-								upvalues.push(upv);
-							}
+							upvalues.push(self.make_upv(mc, *reg));
 						},
 						CompiledUpvalue::Indirect(upv_idx) => {
 							let upv = func.upvalues.get(*upv_idx as usize).copied()
@@ -229,7 +277,7 @@ impl<'gc> VmState<'gc> {
 					}
 				}
 				let func2 = Gc::allocate(mc, Function { chunk: chunk2, upvalues });
-				self.stack.push(Value::Function(func2));
+				self.push(Value::Function(func2));
 			},
 			Instr::Call(arg_cnt) => {
 				let args: Vec<Value> = self.pop_n(arg_cnt as usize)?;
@@ -241,9 +289,10 @@ impl<'gc> VmState<'gc> {
 							return Err(format!("Expected {} arguments, got {}", chunk2.arg_cnt, args.len()));
 						}
 						self.call_function(func2, args, false);
+						jumped = true;
 					},
 					Value::NativeFunction(func2) => {
-						self.stack.push(func2.write(mc).call(mc, args)?);
+						self.push(func2.write(mc).call(mc, args)?);
 					},
 					_ => {
 						return Err(format!("Cannot call non-function: {}", func2.repr()));
@@ -251,32 +300,33 @@ impl<'gc> VmState<'gc> {
 				}
 			},
 			Instr::Return => {
-				self.return_from_call(false);
+				self.return_from_call(mc, false);
+				jumped = true;
 			},
 			Instr::Constant(idx) => {
-				self.stack.push(self.get_cst(&func.chunk, idx)?);
+				self.push(self.get_cst(&func.chunk, idx)?);
 			},
 			Instr::NewTuple(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
-				self.stack.push(Value::Tuple(Gc::allocate(mc, values)));
+				self.push(Value::Tuple(Gc::allocate(mc, values)));
 			},
 			Instr::NewList(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
-				self.stack.push(Value::List(GcCell::allocate(mc, values)));
+				self.push(Value::List(GcCell::allocate(mc, values)));
 			},
 			Instr::NewMap(cnt) => {
 				let mut values = self.pop_n(2 * (cnt as usize))?;
 				let (mut keys, mut values): (Vec<(usize,Value)>,Vec<(usize,Value)>) =
 					values.drain(..).enumerate().partition(|(i,_)| i % 2 == 0);
 				let map: HashMap<Value, Value> = keys.drain(..).map(|(_,v)| v).zip(values.drain(..).map(|(_,v)| v)).collect();
-				self.stack.push(Value::Map(GcCell::allocate(mc, map)));
+				self.push(Value::Map(GcCell::allocate(mc, map)));
 			},
 			Instr::NewObject(class_idx) => {
 				let class = func.chunk.classes.get(class_idx as usize).ok_or_else(|| String::from("Using undefined object class"))?;
 				let mut values = self.pop_n(class.len())?;
 				let obj: HashMap<String, Value> = class.iter().cloned()
 					.zip(values.drain(..)).collect();
-				self.stack.push(Value::Object(GcCell::allocate(mc, obj)));
+				self.push(Value::Object(GcCell::allocate(mc, obj)));
 			},
 			Instr::Binary(op) => {
 				let b = self.pop()?;
@@ -290,19 +340,19 @@ impl<'gc> VmState<'gc> {
 							BinaryOp::Or => a || b,
 							_ => unreachable!(),
 						};
-						self.stack.push(Value::Bool(c));
+						self.push(Value::Bool(c));
 					},
 					BinaryOp::Plus if a.get_type() == Type::String => {
 						let a = a.get_string().unwrap();
 						let b = b.get_string()?;
-						self.stack.push(Value::String(NiceStr((a.to_string() + &b).into_boxed_str())));
+						self.push(Value::String(NiceStr((a + &b).into_boxed_str())));
 					},
 					BinaryOp::Plus if a.get_type() == Type::List => {
 						let a = a.get_list().unwrap();
 						let mut a = a.read().deref().clone();
 						let b = b.get_list()?;
 						a.extend_from_slice(b.read().deref());
-						self.stack.push(Value::List(GcCell::allocate(mc, a)));
+						self.push(Value::List(GcCell::allocate(mc, a)));
 					},
 					BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Times | BinaryOp::Modulo
 							if a.get_type() == Type::Int && b.get_type() == Type::Int => {
@@ -315,7 +365,7 @@ impl<'gc> VmState<'gc> {
 							BinaryOp::Modulo => a.checked_rem_euclid(b).ok_or_else(|| String::from("Division by zero"))?,
 							_ => unreachable!(),
 						};
-						self.stack.push(Value::Int(c));
+						self.push(Value::Int(c));
 					},
 					BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Times | BinaryOp::Divides
 					| BinaryOp::IntDivides | BinaryOp::Modulo | BinaryOp::Power => {
@@ -344,25 +394,25 @@ impl<'gc> VmState<'gc> {
 							BinaryOp::Power => Value::try_from(a.powf(b))?,
 							_ => unreachable!(),
 						};
-						self.stack.push(c);
+						self.push(c);
 					},
 					BinaryOp::Eq => {
-						self.stack.push(Value::Bool(a.struct_eq(&b)));
+						self.push(Value::Bool(a.struct_eq(&b)));
 					},
 					BinaryOp::NotEq => {
-						self.stack.push(Value::Bool(!a.struct_eq(&b)));
+						self.push(Value::Bool(!a.struct_eq(&b)));
 					},
 					BinaryOp::LessEq => {
-						self.stack.push(Value::Bool(a.cmp(&b)? <= Ordering::Equal));
+						self.push(Value::Bool(a.cmp(&b)? <= Ordering::Equal));
 					},
 					BinaryOp::Less => {
-						self.stack.push(Value::Bool(a.cmp(&b)? < Ordering::Equal));
+						self.push(Value::Bool(a.cmp(&b)? < Ordering::Equal));
 					},
 					BinaryOp::Greater => {
-						self.stack.push(Value::Bool(a.cmp(&b)? > Ordering::Equal));
+						self.push(Value::Bool(a.cmp(&b)? > Ordering::Equal));
 					},
 					BinaryOp::GreaterEq => {
-						self.stack.push(Value::Bool(a.cmp(&b)? >= Ordering::Equal));
+						self.push(Value::Bool(a.cmp(&b)? >= Ordering::Equal));
 					},
 				}
 			},
@@ -385,12 +435,12 @@ impl<'gc> VmState<'gc> {
 						}
 					},
 				}
-				self.stack.push(res);
+				self.push(res);
 			},
 			Instr::Index => {
 				let idx = self.pop()?;
 				let coll = self.pop()?;
-				self.stack.push(coll.index(&idx)?);
+				self.push(coll.index(&idx)?);
 			},
 			Instr::SetIndex => {
 				let val = self.pop()?;
@@ -401,7 +451,7 @@ impl<'gc> VmState<'gc> {
 			Instr::Prop(cst_idx) => {
 				let obj = self.pop()?;
 				let idx = self.get_cst(&func.chunk, cst_idx)?.get_string()?;
-				self.stack.push(obj.prop(&idx, mc)?);
+				self.push(obj.prop(&idx, mc)?);
 			},
 			Instr::SetProp(cst_idx) => {
 				let val = self.pop()?;
@@ -416,19 +466,17 @@ impl<'gc> VmState<'gc> {
 					iter = self.get_reg(iter_reg)?;
 				}
 				if let Some(value) = iter.next(mc)? {
-					self.stack.push(value);
-					self.stack.push(Value::Bool(true));
+					self.push(value);
+					self.push(Value::Bool(true));
 				} else {
-					self.stack.push(Value::Bool(false));
+					self.push(Value::Bool(false));
 				}
 			},
 		}
 		
-		if !self.jumped {
+		if !jumped {
 			self.idx += 1;
 		}
-		
-		self.check_end();
 		
 		Ok(())
 	}
@@ -446,28 +494,6 @@ impl<'gc> VmState<'gc> {
 		}
 	}
 	
-	fn call_function(&mut self, func: Gc<'gc, Function<'gc>>, mut args: Vec<Value<'gc>>, no_return: bool) {
-		if !no_return {
-			let last = self.calls.last_mut().unwrap();
-			last.return_idx = Some(self.idx + 1);
-		}
-		self.calls.push(Call {
-			func,
-			interactive: false,
-			reg_base: self.registers.len(),
-			return_idx: None,
-		});
-		
-		for (i, arg) in args.drain(..).enumerate() {
-			self.set_reg(i as u16, arg);
-		}
-		
-		self.idx = 0;
-		self.jumped = true;
-		
-		self.check_end();
-	}
-	
 	// Runs function at top level in "interactive mode"
 	// This means that the function's registers won't be dropped after its execution
 	// Used in REPL
@@ -480,8 +506,6 @@ impl<'gc> VmState<'gc> {
 		});
 		
 		self.idx = 0;
-		
-		self.check_end();
 	}
 }
 
@@ -505,7 +529,8 @@ impl InteractiveVm {
 		self.arena.mutate(|mc, state| {
 			state.write(mc).run_interactive(mc, func);
 		});
-		while self.arena.root.read().has_call() {
+		loop {
+			if self.arena.mutate(|mc, state| state.write(mc).check_end(mc, 0)) { break }
 			self.arena.mutate(|mc, state| state.write(mc).execute_instr_safe(mc))?
 		}
 		Ok(())
@@ -518,7 +543,8 @@ pub fn execute_function(func: Rc<CompiledFunction>) -> Result<(), String>  {
 		state.write(mc).init_globals(mc);
 		state.write(mc).call_function(Gc::allocate(mc, Function::main(func)), vec![], true);
 	});
-	while arena.root.read().has_call() {
+	loop {
+		if arena.mutate(|mc, state| state.write(mc).check_end(mc, 0)) { break }
 		arena.mutate(|mc, state| state.write(mc).execute_instr(mc))?;
 	}
 	Ok(())

@@ -83,7 +83,7 @@ native_func!(seq_sub, mc, args, {
 	let sub = start2.and_then(|start| end2.and_then(|end| seq.get(start..end)))
 		.ok_or_else(||
 			format!("Cannot take sublist {}..{} of sequence of length {}",
-				start, end.map(|i| i.to_string()).unwrap_or(String::new()), seq.len())
+				start, end.map(|i| i.to_string()).unwrap_or_else(String::new), seq.len())
 		)?.to_vec();
 	match &args[0] {
 		Value::Tuple(_) => Ok(Value::Tuple(Gc::allocate(mc, sub))),
@@ -162,7 +162,7 @@ impl<'gc> NativeIterator<'gc> for IntIterator {
 	}
 }
 
-fn check_range_args(args: &Vec<Value>) -> Result<(Option<i32>, i32, i32), String> {
+fn check_range_args(args: &[Value]) -> Result<(Option<i32>, i32, i32), String> {
 	if args.is_empty() || args.len() > 3 {
 		return expected("1-3 arguments", &args.len().to_string());
 	}

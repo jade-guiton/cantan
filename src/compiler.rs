@@ -292,11 +292,12 @@ impl<'a> FunctionContext<'a> {
 	}
 	fn finish_def(&mut self) -> u16 {
 		let (id, reg) = self.cur_def.take().unwrap();
-		if self.blocks.last_mut().unwrap().locals.contains_key(&id) {
+		let locals = &mut self.blocks.last_mut().unwrap().locals;
+		if locals.contains_key(&id) {
 			// Shadow previous binding
 			self.func.code.push(Instr::Drop(reg));
 		} else {
-			self.blocks.last_mut().unwrap().locals.insert(id, reg);
+			locals.insert(id, reg);
 		}
 		self.func.code.push(Instr::Store(reg));
 		self.stack_size -= 1;
