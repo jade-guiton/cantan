@@ -31,10 +31,6 @@ pub struct VmState<'gc> {
 	idx: usize,
 }
 
-type MutVmState<'gc> = GcCell<'gc, VmState<'gc>>;
-
-make_arena!(pub VmArena, MutVmState);
-
 impl<'gc> VmState<'gc> {
 	pub fn new() -> Self {
 		VmState {
@@ -161,6 +157,23 @@ impl<'gc> VmState<'gc> {
 		self.idx = 0;
 	}
 	
+	// Runs function at top level in "interactive mode"
+	// This means that the function's registers won't be dropped after execution,
+	// and some more code within the same scope can be run afterwards.
+	// Used in REPL.
+	fn call_interactive(&mut self, mc: MutationContext<'gc, '_>, func: Rc<CompiledFunction>) {
+		assert!(self.calls.len() == 0);
+		
+		self.calls.push(Call {
+			func: Gc::allocate(mc, Function::main(func)),
+			interactive: true,
+			reg_base: 0,
+			return_idx: None,
+		});
+		
+		self.idx = 0;
+	}
+	
 	fn return_from_call(&mut self, mc: MutationContext<'gc, '_>, implicit: bool) {
 		let call = self.calls.pop().unwrap();
 		if !call.interactive { // If in interactive mode, keep rest of state for next call
@@ -190,7 +203,7 @@ impl<'gc> VmState<'gc> {
 	}
 	
 	// Warning: does not reset state on errors; callers should not reuse state after error
-	fn execute_instr(&mut self, mc: MutationContext<'gc, '_>) -> Result<(), String> {
+	fn run_instr_unsafe(&mut self, mc: MutationContext<'gc, '_>) -> Result<(), String> {
 		let func = self.calls.last().unwrap().func;
 		let instr = func.chunk.code.get(self.idx)
 			.ok_or_else(|| String::from("Jumped to invalid instruction"))?
@@ -481,10 +494,11 @@ impl<'gc> VmState<'gc> {
 		Ok(())
 	}
 	
-	// Like execute_instr, but clears calls and the stack on errors, but not registers
+	// Like run_instr_unsafe, but clears calls and the stack on errors
+	// Does not clear registers
 	// Using this, VmState can be reused in interactive mode even after error
-	fn execute_instr_safe(&mut self, mc: MutationContext<'gc, '_>) -> Result<(), String> {
-		match self.execute_instr(mc) {
+	fn run_instr(&mut self, mc: MutationContext<'gc, '_>) -> Result<(), String> {
+		match self.run_instr_unsafe(mc) {
 			Ok(()) => Ok(()),
 			Err(err) => {
 				self.calls.clear();
@@ -493,25 +507,44 @@ impl<'gc> VmState<'gc> {
 			}
 		}
 	}
-	
-	// Runs function at top level in "interactive mode"
-	// This means that the function's registers won't be dropped after its execution
-	// Used in REPL
-	fn run_interactive(&mut self, mc: MutationContext<'gc, '_>, func: Rc<CompiledFunction>) {
-		self.calls.push(Call {
-			func: Gc::allocate(mc, Function::main(func)),
-			interactive: true,
-			reg_base: 0,
-			return_idx: None,
-		});
-		
-		self.idx = 0;
-	}
 }
 
-fn new_arena() -> VmArena {
-	VmArena::new(gc_arena::ArenaParameters::default(),
-		|mc| GcCell::allocate(mc, VmState::new()))
+
+type MutVmState<'gc> = GcCell<'gc, VmState<'gc>>;
+
+make_arena!(pub VmArena, MutVmState);
+
+impl VmArena {
+	fn create() -> Self {
+		let mut arena = VmArena::new(gc_arena::ArenaParameters::default(),
+			|mc| GcCell::allocate(mc, VmState::new()));
+		arena.mutate(|mc, state| state.write(mc).init_globals(mc));
+		arena
+	}
+	
+	fn run(&mut self, call_base: usize) -> Result<(), String> {
+		loop {
+			if self.mutate(|mc, state| state.write(mc).check_end(mc, call_base)) { break }
+			self.mutate(|mc, state| state.write(mc).run_instr(mc))?
+		}
+		Ok(())
+	}
+	
+	pub fn run_function(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
+		let call_base = self.root.read().calls.len();
+		self.mutate(|mc, state| {
+			state.write(mc).call_function(Gc::allocate(mc, Function::main(func)), vec![], true);
+		});
+		self.run(call_base)
+	}
+	
+	pub fn run_interactive(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
+		let call_base = self.root.read().calls.len();
+		self.mutate(|mc, state| {
+			state.write(mc).call_interactive(mc, func);
+		});
+		self.run(call_base)
+	}
 }
 
 pub struct InteractiveVm {
@@ -520,32 +553,15 @@ pub struct InteractiveVm {
 
 impl InteractiveVm {
 	pub fn new() -> Self {
-		let mut vm = InteractiveVm { arena: new_arena() };
-		vm.arena.mutate(|mc, state| state.write(mc).init_globals(mc));
-		vm
+		InteractiveVm { arena: VmArena::create() }
 	}
 	
 	pub fn execute_function(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
-		self.arena.mutate(|mc, state| {
-			state.write(mc).run_interactive(mc, func);
-		});
-		loop {
-			if self.arena.mutate(|mc, state| state.write(mc).check_end(mc, 0)) { break }
-			self.arena.mutate(|mc, state| state.write(mc).execute_instr_safe(mc))?
-		}
-		Ok(())
+		self.arena.run_interactive(func)
 	}
 }
 
 pub fn execute_function(func: Rc<CompiledFunction>) -> Result<(), String>  {
-	let mut arena = new_arena();
-	arena.mutate(|mc, state| {
-		state.write(mc).init_globals(mc);
-		state.write(mc).call_function(Gc::allocate(mc, Function::main(func)), vec![], true);
-	});
-	loop {
-		if arena.mutate(|mc, state| state.write(mc).check_end(mc, 0)) { break }
-		arena.mutate(|mc, state| state.write(mc).execute_instr(mc))?;
-	}
-	Ok(())
+	let mut arena = VmArena::create();
+	arena.run_function(func)
 }
