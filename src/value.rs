@@ -11,7 +11,8 @@ use ordered_float::NotNan;
 
 use crate::ast::Primitive;
 use crate::chunk::CompiledFunction;
-use crate::gc::{Trace, TraceCtx, GCRef, GCCell, GCHeap};
+use crate::gc::{Trace, TraceCtx, GcRef, GcCell, GcHeap};
+use crate::vm::VmArena;
 
 #[derive(Trace)]
 pub enum Upvalue {
@@ -22,7 +23,7 @@ pub enum Upvalue {
 #[derive(Trace)]
 pub struct Function {
 	pub chunk: Rc<CompiledFunction>,
-	pub upvalues: Vec<GCCell<Upvalue>>,
+	pub upvalues: Vec<GcCell<Upvalue>>,
 }
 
 impl Function {
@@ -65,7 +66,7 @@ impl Deref for NiceStr {
 
 unsafe impl Trace for NiceStr {}
 
-pub trait NativeFunction = for<'gc, 'ctx> Fn(&mut GCHeap, Vec<Value>) -> Result<Value, String> + 'static;
+pub trait NativeFunction = for<'gc, 'ctx> Fn(&mut VmArena, Vec<Value>) -> Result<Value, String> + 'static;
 
 pub struct NativeFunctionWrapper {
 	pub func: Box<dyn NativeFunction>,
@@ -77,11 +78,11 @@ impl NativeFunctionWrapper {
 		NativeFunctionWrapper { func: Box::new(func), this }
 	}
 	
-	pub fn call(&mut self, gc: &mut GCHeap, mut args: Vec<Value>) -> Result<Value, String> {
+	pub fn call(&mut self, vm: &mut VmArena, mut args: Vec<Value>) -> Result<Value, String> {
 		if let Some(this) = &self.this {
 			args.insert(0, this.clone());
 		}
-		(self.func)(gc, args)
+		(self.func)(vm, args)
 	}
 }
 
@@ -103,7 +104,7 @@ unsafe impl Trace for NativeFunctionWrapper {
 }
 
 pub trait NativeIterator: Trace {
-	fn next(&mut self, gc: &mut GCHeap) -> Result<Option<Value>, String>;
+	fn next(&mut self, gc: &mut GcHeap) -> Result<Option<Value>, String>;
 }
 
 #[derive(Trace)]
@@ -122,7 +123,7 @@ impl ListIterator {
 }
 
 impl NativeIterator for ListIterator {
-	fn next(&mut self, _gc: &mut GCHeap) -> Result<Option<Value>, String> {
+	fn next(&mut self, _gc: &mut GcHeap) -> Result<Option<Value>, String> {
 		if let Some(val) = self.list.get(self.idx.get()).cloned() {
 			self.idx.set(self.idx.get() + 1);
 			Ok(Some(val))
@@ -150,7 +151,7 @@ impl fmt::Debug for IteratorWrapper {
 }
 
 pub enum ImmutSequence<'seq> {
-	Tuple(GCRef<Vec<Value>>),
+	Tuple(GcRef<Vec<Value>>),
 	List(std::cell::Ref<'seq, Vec<Value>>),
 }
 
@@ -173,13 +174,13 @@ pub enum Value {
 	Float(NiceFloat),
 	String(NiceStr),
 	
-	Tuple(GCRef<Vec<Value>>),
-	List(GCCell<Vec<Value>>),
-	Map(GCCell<HashMap<Value, Value>>),
-	Object(GCCell<HashMap<String, Value>>),
-	Function(GCRef<Function>),
-	NativeFunction(GCCell<NativeFunctionWrapper>),
-	Iterator(GCCell<IteratorWrapper>),
+	Tuple(GcRef<Vec<Value>>),
+	List(GcCell<Vec<Value>>),
+	Map(GcCell<HashMap<Value, Value>>),
+	Object(GcCell<HashMap<String, Value>>),
+	Function(GcRef<Function>),
+	NativeFunction(GcCell<NativeFunctionWrapper>),
+	Iterator(GcCell<IteratorWrapper>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -212,11 +213,11 @@ macro_rules! get_prim {
 }
 
 impl Value {
-	pub fn from_native_func(gc: &mut GCHeap, func: impl NativeFunction, this: Option<Value>) -> Self {
+	pub fn from_native_func(gc: &mut GcHeap, func: impl NativeFunction, this: Option<Value>) -> Self {
 		Value::NativeFunction(gc.add_cell(NativeFunctionWrapper::new(func, this)))
 	}
 	
-	pub fn from_native_iter(gc: &mut GCHeap, iter: impl NativeIterator) -> Self {
+	pub fn from_native_iter(gc: &mut GcHeap, iter: impl NativeIterator) -> Self {
 		Value::Iterator(gc.add_cell(IteratorWrapper::new(iter)))
 	}
 	
@@ -240,9 +241,9 @@ impl Value {
 	
 	get_prim!(get_bool, bool, Bool);
 	get_prim!(get_int, i32, Int);
-	get_prim!(get_list, GCCell<Vec<Value>>, List);
-	get_prim!(get_tuple, GCRef<Vec<Value>>, Tuple);
-	get_prim!(get_iter, GCCell<IteratorWrapper>, Iterator);
+	get_prim!(get_list, GcCell<Vec<Value>>, List);
+	get_prim!(get_tuple, GcRef<Vec<Value>>, Tuple);
+	get_prim!(get_iter, GcCell<IteratorWrapper>, Iterator);
 	
 	pub fn get_sequence<'a>(&'a self) -> Result<ImmutSequence<'a>, String> {
 		match self {
@@ -453,7 +454,7 @@ impl Value {
 		Ok(())
 	}
 	
-	pub fn prop(&self, prop: &str, gc: &mut GCHeap) -> Result<Value, String> {
+	pub fn prop(&self, prop: &str, gc: &mut GcHeap) -> Result<Value, String> {
 		match self {
 			Value::Object(obj) => {
 				Ok(obj.borrow().get(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?.clone())
@@ -482,7 +483,7 @@ impl Value {
 		}
 	}
 	
-	pub fn make_iter(&self, gc: &mut GCHeap) -> Result<Option<Value>, String> {
+	pub fn make_iter(&self, gc: &mut GcHeap) -> Result<Option<Value>, String> {
 		match self {
 			Value::List(list) => {
 				Ok(Some(Value::from_native_iter(gc, ListIterator::new(list.borrow().clone()))))
@@ -492,7 +493,7 @@ impl Value {
 		}
 	}
 	
-	pub fn next(&self, gc: &mut GCHeap) -> Result<Option<Value>, String> {
+	pub fn next(&self, gc: &mut GcHeap) -> Result<Option<Value>, String> {
 		match self {
 			Value::Iterator(iter) => {
 				iter.borrow_mut().iter.next(gc)

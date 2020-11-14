@@ -8,17 +8,18 @@ use once_cell::sync::Lazy;
 use unicode_segmentation::GraphemeCursor;
 
 use crate::value::{expected, NativeIterator, Type, Value};
-use crate::gc::{Trace, Primitive, GCHeap};
+use crate::gc::{Trace, Primitive, GcHeap};
+use crate::vm::VmArena;
 
 // To avoid writing the same type signature every time
 macro_rules! native_func {
-	($id:ident, $gc:ident, $args:ident, $block:block) => {
-		fn $id($gc: &mut GCHeap, $args: Vec<Value>) -> Result<Value, String> {
+	($id:ident, $vm:ident, $args:ident, $block:block) => {
+		fn $id($vm: &mut VmArena, $args: Vec<Value>) -> Result<Value, String> {
 			$block
 		}
 	};
-	($id:ident, $args:ident, $block:block) => { native_func!($id, _gc, $args, $block); };
-	($id:ident, $block:block) => { native_func!($id, _gc, _args, $block); };
+	($id:ident, $args:ident, $block:block) => { native_func!($id, _vm, $args, $block); };
+	($id:ident, $block:block) => { native_func!($id, _vm, _args, $block); };
 }
 
 fn check_arg_cnt(exp: usize, cnt: usize) -> Result<(), String> {
@@ -70,7 +71,7 @@ fn wrap_index(idx: i32, len: usize) -> Option<usize> {
 	}
 }
 
-native_func!(seq_sub, gc, args, {
+native_func!(seq_sub, vm, args, {
 	if args.len() < 2 || args.len() > 3 {
 		return expected("1/2 arguments", &(args.len() - 1).to_string());
 	}
@@ -86,21 +87,21 @@ native_func!(seq_sub, gc, args, {
 				start, end.map(|i| i.to_string()).unwrap_or_else(String::new), seq.len())
 		)?.to_vec();
 	match &args[0] {
-		Value::Tuple(_) => Ok(Value::Tuple(gc.add(sub))),
-		Value::List(_) => Ok(Value::List(gc.add_cell(sub))),
+		Value::Tuple(_) => Ok(Value::Tuple(vm.gc.add(sub))),
+		Value::List(_) => Ok(Value::List(vm.gc.add_cell(sub))),
 		_ => unimplemented!(),
 	}
 });
 
-native_func!(seq_to_iter, gc, args, {
+native_func!(seq_to_iter, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
-	args[0].make_iter(gc).transpose().unwrap()
+	args[0].make_iter(&mut vm.gc).transpose().unwrap()
 });
 
-native_func!(tuple_to_list, gc, args, {
+native_func!(tuple_to_list, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let tuple = args[0].get_tuple()?;
-	Ok(Value::List(gc.add_cell(tuple.deref().clone())))
+	Ok(Value::List(vm.gc.add_cell(tuple.deref().clone())))
 });
 
 native_func!(list_push, args, {
@@ -135,11 +136,11 @@ native_func!(list_pop, args, {
 	}
 });
 
-native_func!(list_to_tuple, gc, args, {
+native_func!(list_to_tuple, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let list = args[0].get_list()?;
 	let list = list.borrow();
-	Ok(Value::Tuple(gc.add(list.deref().clone())))
+	Ok(Value::Tuple(vm.gc.add(list.deref().clone())))
 });
 
 #[derive(Trace)]
@@ -150,7 +151,7 @@ struct IntIterator {
 }
 
 impl NativeIterator for IntIterator {
-	fn next(&mut self, _gc: &mut GCHeap) -> Result<Option<Value>, String> {
+	fn next(&mut self, _gc: &mut GcHeap) -> Result<Option<Value>, String> {
 		let next = self.next.get();
 		if next < self.until {
 			self.next.set(next + self.step);
@@ -174,18 +175,18 @@ fn check_range_args(args: &[Value]) -> Result<(Option<i32>, i32, i32), String> {
 	Ok((start, until, step))
 }
 
-native_func!(xrange, gc, args, {
+native_func!(xrange, vm, args, {
 	let (start, until, step) = check_range_args(&args)?;
-	Ok(Value::from_native_iter(gc, IntIterator {
+	Ok(Value::from_native_iter(&mut vm.gc, IntIterator {
 		next: Cell::new(start.unwrap_or(0)),
 		until,
 		step
 	}))
 });
 
-native_func!(range, gc, args, {
+native_func!(range, vm, args, {
 	let (start, until, step) = check_range_args(&args)?;
-	Ok(Value::from_native_iter(gc, IntIterator {
+	Ok(Value::from_native_iter(&mut vm.gc, IntIterator {
 		next: Cell::new(start.unwrap_or(1)),
 		until: until + 1,
 		step
@@ -211,7 +212,7 @@ impl CharIterator {
 }
 
 impl NativeIterator for CharIterator {
-	fn next(&mut self, _gc: &mut GCHeap) -> Result<Option<Value>, String> {
+	fn next(&mut self, _gc: &mut GcHeap) -> Result<Option<Value>, String> {
 		let next = self.cursor.next_boundary(&self.string, 0)
 			.map_err(|_| String::from("Error during iteration over string"))?;
 		match next {
@@ -225,13 +226,13 @@ impl NativeIterator for CharIterator {
 	}
 }
 
-native_func!(str_chars, gc, args, {
+native_func!(str_chars, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let s = args[0].get_string()?;
-	Ok(Value::from_native_iter(gc, CharIterator::new(s)))
+	Ok(Value::from_native_iter(&mut vm.gc, CharIterator::new(s)))
 });
 
-native_func!(iter_join, gc, args, {
+native_func!(iter_join, vm, args, {
 	if args.len() > 2 {
 		return expected("0/1 arguments", &(args.len() - 1).to_string());
 	}
@@ -245,7 +246,7 @@ native_func!(iter_join, gc, args, {
 	
 	let mut buf = String::new();
 	let mut first = true;
-	while let Some(val) = iter.iter.next(gc)? {
+	while let Some(val) = iter.iter.next(&mut vm.gc)? {
 		if first {
 			first = false;
 		} else if let Some(ref sep) = sep {
@@ -257,45 +258,45 @@ native_func!(iter_join, gc, args, {
 	Ok(Value::from(buf))
 });
 
-native_func!(iter_to_list, gc, args, {
+native_func!(iter_to_list, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let iter = args[0].get_iter()?;
 	let mut iter = iter.borrow_mut();
 	
 	let mut values = vec![];
-	while let Some(val) = iter.iter.next(gc)? {
+	while let Some(val) = iter.iter.next(&mut vm.gc)? {
 		values.push(val);
 	}
 	
-	Ok(Value::List(gc.add_cell(values)))
+	Ok(Value::List(vm.gc.add_cell(values)))
 });
-native_func!(iter_to_tuple, gc, args, {
+native_func!(iter_to_tuple, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let iter = args[0].get_iter()?;
 	let mut iter = iter.borrow_mut();
 	
 	let mut values = vec![];
-	while let Some(val) = iter.iter.next(gc)? {
+	while let Some(val) = iter.iter.next(&mut vm.gc)? {
 		values.push(val);
 	}
 	
-	Ok(Value::Tuple(gc.add(values)))
+	Ok(Value::Tuple(vm.gc.add(values)))
 });
 
-native_func!(iter_next, gc, args, {
+native_func!(iter_next, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let iter = args[0].get_iter()?;
 	let mut iter = iter.borrow_mut();
 	
-	let res = match iter.iter.next(gc)? {
+	let res = match iter.iter.next(&mut vm.gc)? {
 		Some(val) => vec![Value::Bool(true), val],
 		None => vec![Value::Bool(false)],
 	};
-	Ok(Value::Tuple(gc.add(res)))
+	Ok(Value::Tuple(vm.gc.add(res)))
 });
 
 
-type NativeFn = fn(&mut GCHeap, Vec<Value>) -> Result<Value, String>;
+type NativeFn = fn(&mut VmArena, Vec<Value>) -> Result<Value, String>;
 
 pub static FUNCTIONS: Lazy<HashMap<String, NativeFn>> = Lazy::new(|| [
 	("log", log as NativeFn),
@@ -335,7 +336,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 	])
 ].iter().map(|(t,p)| (*t, p.iter().map(|(s,f)| (s.to_string(), *f)).collect())).collect());
 
-pub fn create(globals: &mut HashMap<String, Value>, gc: &mut GCHeap) {
+pub fn create(globals: &mut HashMap<String, Value>, gc: &mut GcHeap) {
 	for (name, func) in FUNCTIONS.deref() {
 		globals.insert(name.clone(), Value::from_native_func(gc, func, None));
 	}

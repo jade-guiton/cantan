@@ -12,13 +12,13 @@ enum TraceAction {
 #[derive(PartialEq, Eq, Clone, Copy)]
 pub struct TraceCtx(TraceAction);
 
-// Safety: .trace(ctx) must call .trace(ctx) on all direct GCRef or Trace children.
+// Safety: .trace(ctx) must call .trace(ctx) on all direct GcRef or Trace children.
 pub unsafe trait Trace: 'static {
 	// Safety: must only be called on objects in the GC heap.
 	unsafe fn trace(&self, _ctx: TraceCtx) {}
 }
 
-// Safety: Marker trait for types with no accessible GCRefs
+// Safety: Marker trait for types with no accessible GcRefs
 pub unsafe trait Primitive: 'static {}
 unsafe impl<T: Primitive> Trace for T {}
 
@@ -44,7 +44,7 @@ unsafe impl<T: Trace> Trace for Vec<T> {
 		}
 	}
 }
-unsafe impl<T: Trace> Trace for Vec<GCRef<T>> {
+unsafe impl<T: Trace> Trace for Vec<GcRef<T>> {
 	unsafe fn trace(&self, ctx: TraceCtx) {
 		for x in self {
 			x.trace(ctx);
@@ -62,7 +62,7 @@ unsafe impl<T1: Trace, T2: Trace> Trace for HashMap<T1, T2> {
 		}
 	}
 }
-unsafe impl<T1: Trace, T2: Trace> Trace for HashMap<T1, GCRef<T2>> {
+unsafe impl<T1: Trace, T2: Trace> Trace for HashMap<T1, GcRef<T2>> {
 	unsafe fn trace(&self, ctx: TraceCtx) {
 		for x in self.keys() {
 			x.trace(ctx);
@@ -79,19 +79,19 @@ unsafe impl<T: Trace> Trace for RefCell<T> {
 	}
 }
 
-pub type GCCell<T> = GCRef<RefCell<T>>;
+pub type GcCell<T> = GcRef<RefCell<T>>;
 
 
 #[repr(C)]
-pub(super) struct GCWrapper<T: Trace> {
+pub(super) struct GcWrapper<T: Trace> {
 	marked: Cell<bool>,
 	root_cnt: Cell<u8>,
 	data: T,
 }
 
-impl<T: Trace> GCWrapper<T> {
-	fn new(value: T) -> GCWrapper<T> {
-		GCWrapper {
+impl<T: Trace> GcWrapper<T> {
+	fn new(value: T) -> GcWrapper<T> {
+		GcWrapper {
 			marked: Cell::new(false),
 			root_cnt: Cell::new(0),
 			data: value
@@ -99,13 +99,13 @@ impl<T: Trace> GCWrapper<T> {
 	}
 }
 
-impl<T: Trace> Deref for GCWrapper<T> {
+impl<T: Trace> Deref for GcWrapper<T> {
 	type Target = T;
 	fn deref(&self) -> &T { &self.data }
 }
 
 
-trait GCWrapped {
+trait GcWrapped {
 	fn root(&self);
 	fn unroot(&self);
 	fn is_rooted(&self) -> bool;
@@ -117,7 +117,7 @@ trait GCWrapped {
 	fn size(&self) -> usize;
 }
 
-impl<T: Trace> GCWrapped for GCWrapper<T> {
+impl<T: Trace> GcWrapped for GcWrapper<T> {
 	fn root(&self) {
 		self.root_cnt.set(self.root_cnt.get() + 1);
 	}
@@ -147,15 +147,15 @@ impl<T: Trace> GCWrapped for GCWrapper<T> {
 }
 
 
-pub struct GCRef<T: Trace> {
+pub struct GcRef<T: Trace> {
 	is_root: Cell<bool>,
-	wrapper: *const GCWrapper<T>
+	wrapper: *const GcWrapper<T>
 }
 
-impl<T: Trace> GCRef<T> {
-	fn new(wrapper: &GCWrapper<T>) -> Self {
+impl<T: Trace> GcRef<T> {
+	fn new(wrapper: &GcWrapper<T>) -> Self {
 		(*wrapper).root();
-		GCRef {
+		GcRef {
 			is_root: Cell::new(true),
 			wrapper,
 		}
@@ -165,7 +165,7 @@ impl<T: Trace> GCRef<T> {
 	
 	// Safety: as long as the GC algorithm is correct, self.wrapper cannot be invalid,
 	// except in the middle of the sweep step of GC, where this function must not be called.
-	fn wrapper(&self) -> &GCWrapper<T> { unsafe { &*self.wrapper } }
+	fn wrapper(&self) -> &GcWrapper<T> { unsafe { &*self.wrapper } }
 	
 	// Safety: reference must be on the GC heap or about to be dropped
 	unsafe fn unroot(&self) {
@@ -184,19 +184,19 @@ impl<T: Trace> GCRef<T> {
 	}
 }
 
-impl<T: Trace> Clone for GCRef<T> {
+impl<T: Trace> Clone for GcRef<T> {
 	fn clone(&self) -> Self {
-		GCRef::new(self.wrapper())
+		GcRef::new(self.wrapper())
 	}
 }
 
-impl<T: Trace> Drop for GCRef<T> {
+impl<T: Trace> Drop for GcRef<T> {
 	fn drop(&mut self) {
 		unsafe { self.unroot(); }
 	}
 }
 
-impl<T: Trace> Deref for GCRef<T> {
+impl<T: Trace> Deref for GcRef<T> {
 	type Target = T;
 	
 	fn deref(&self) -> &T {
@@ -204,9 +204,9 @@ impl<T: Trace> Deref for GCRef<T> {
 	}
 }
 
-impl<T: Trace + fmt::Debug> fmt::Debug for GCRef<T> {
+impl<T: Trace + fmt::Debug> fmt::Debug for GcRef<T> {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-		write!(fmt, "GCRef(")?;
+		write!(fmt, "GcRef(")?;
 		self.wrapper().fmt(fmt)?;
 		write!(fmt, ")")
 	}
@@ -215,30 +215,30 @@ impl<T: Trace + fmt::Debug> fmt::Debug for GCRef<T> {
 
 const INIT_THRESHOLD: usize = 64;
 
-pub struct GCHeap {
-	objects: Vec<Box<dyn GCWrapped>>,
+pub struct GcHeap {
+	objects: Vec<Box<dyn GcWrapped>>,
 	threshold: usize,
 	used: usize,
 }
 
-impl GCHeap {
-	pub fn new() -> GCHeap {
-		GCHeap {
+impl GcHeap {
+	pub fn new() -> GcHeap {
+		GcHeap {
 			objects: vec![],
 			threshold: INIT_THRESHOLD,
 			used: 0,
 		}
 	}
 	
-	pub fn add<T: Trace>(&mut self, v: T) -> GCRef<T> {
-		self.objects.push(Box::new(GCWrapper::new(v)));
+	pub fn add<T: Trace>(&mut self, v: T) -> GcRef<T> {
+		self.objects.push(Box::new(GcWrapper::new(v)));
 		// Safety: we just pushed the object, so we know its concrete type
-		let wrapper = unsafe { &*(&**self.objects.last().unwrap() as *const dyn GCWrapped as *const GCWrapper<T>) };
+		let wrapper = unsafe { &*(&**self.objects.last().unwrap() as *const dyn GcWrapped as *const GcWrapper<T>) };
 		self.used += wrapper.size();
-		GCRef::new(wrapper)
+		GcRef::new(wrapper)
 	}
 	
-	pub fn add_cell<T: Trace>(&mut self, v: T) -> GCCell<T> {
+	pub fn add_cell<T: Trace>(&mut self, v: T) -> GcCell<T> {
 		self.add(RefCell::new(v))
 	}
 	
@@ -283,8 +283,8 @@ impl GCHeap {
 	}
 }
 
-// GCHeap panis when dropped if there are still living roots
-impl Drop for GCHeap {
+// GcHeap panics when dropped if there are still living roots
+impl Drop for GcHeap {
 	fn drop(&mut self) {
 		self.collect();
 		if !self.is_empty() {

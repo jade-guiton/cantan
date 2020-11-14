@@ -7,14 +7,44 @@ use std::rc::Rc;
 use crate::ast::{UnaryOp, BinaryOp};
 use crate::chunk::*;
 use crate::value::*;
-use crate::gc::{Trace, GCRef, GCCell, GCHeap};
+use crate::gc::{Trace, GcRef, GcCell, GcHeap};
 
 #[derive(Trace)]
-struct Call {
-	func: GCRef<Function>,
+struct FunctionCall {
+	func: GcRef<Function>,
 	interactive: bool,
 	reg_base: usize,
 	return_idx: Option<usize>,
+}
+
+#[derive(Trace)]
+struct NativeCall {
+	func: GcCell<NativeFunctionWrapper>,
+	args: Vec<Value>,
+}
+
+#[derive(Trace)]
+enum Call {
+	Function(FunctionCall),
+	Native(NativeCall),
+}
+
+impl Call {
+	fn unwrap_function_call(&mut self) -> &mut FunctionCall {
+		match self {
+			Call::Function(call) => call,
+			Call::Native(_) => panic!("Expected non-native function call"),
+		}
+	}
+	fn get_native_call(&mut self) -> Option<&mut NativeCall> {
+		match self {
+			Call::Native(call) => Some(call),
+			Call::Function(_) => None,
+		}
+	}
+	fn unwrap_native_call(&mut self) -> &mut NativeCall {
+		self.get_native_call().expect("Expected native function call")
+	}
 }
 
 #[derive(Trace)]
@@ -23,7 +53,7 @@ pub struct VmState {
 	calls: Vec<Call>,
 	registers: Vec<Value>,
 	stack: Vec<Value>,
-	upvalues: HashMap<usize, GCCell<Upvalue>>,
+	upvalues: HashMap<usize, GcCell<Upvalue>>,
 	reg_base: usize,
 	idx: usize,
 }
@@ -41,7 +71,7 @@ impl VmState {
 		}
 	}
 	
-	fn init_globals(&mut self, gc: &mut GCHeap) {
+	fn init_globals(&mut self, gc: &mut GcHeap) {
 		crate::stdlib::create(&mut self.globals, gc);
 	}
 	
@@ -88,7 +118,7 @@ impl VmState {
 		}
 	}
 	
-	fn make_upv(&mut self, gc: &mut GCHeap, reg: u16) -> GCCell<Upvalue> {
+	fn make_upv(&mut self, gc: &mut GcHeap, reg: u16) -> GcCell<Upvalue> {
 		let reg = self.reg_base + reg as usize;
 		if let Some(upv) = self.upvalues.get(&reg) {
 			upv.clone()
@@ -132,20 +162,19 @@ impl VmState {
 			self.idx += rel as usize;
 		}
 	}
-	
-	fn call_function(&mut self, func: GCRef<Function>, mut args: Vec<Value>, no_return: bool) {
-		if !no_return {
-			let last = self.calls.last_mut().unwrap();
-			last.return_idx = Some(self.idx + 1);
+
+	fn call_function(&mut self, func: GcRef<Function>, mut args: Vec<Value>) {
+		if let Some(Call::Function(call)) = self.calls.last_mut() {
+			call.return_idx = Some(self.idx + 1);
 		}
 		let reg_base = self.registers.len();
 		self.reg_base = reg_base;
-		self.calls.push(Call {
+		self.calls.push(Call::Function(FunctionCall {
 			func,
 			interactive: false,
 			reg_base,
 			return_idx: None,
-		});
+		}));
 		
 		for (i, arg) in args.drain(..).enumerate() {
 			self.set_reg(i as u16, arg);
@@ -153,26 +182,60 @@ impl VmState {
 		
 		self.idx = 0;
 	}
+
+	fn call_native(&mut self, func: GcCell<NativeFunctionWrapper>, args: Vec<Value>) {
+		if let Some(Call::Function(call)) = self.calls.last_mut() {
+			call.return_idx = Some(self.idx + 1);
+		}
+		self.calls.push(Call::Native(NativeCall {
+			func,
+			args,
+		}));
+	}
 	
 	// Runs function at top level in "interactive mode"
 	// This means that the function's registers won't be dropped after execution,
 	// and some more code within the same scope can be run afterwards.
 	// Used in REPL.
-	fn call_interactive(&mut self, gc: &mut GCHeap, func: Rc<CompiledFunction>) {
+	fn call_interactive(&mut self, gc: &mut GcHeap, func: Rc<CompiledFunction>) {
 		assert!(self.calls.is_empty());
 		
-		self.calls.push(Call {
+		self.calls.push(Call::Function(FunctionCall {
 			func: gc.add(Function::main(func)),
 			interactive: true,
 			reg_base: 0,
 			return_idx: None,
-		});
+		}));
 		
 		self.idx = 0;
 	}
+
+	fn get_native_call(&mut self) -> Option<NativeCall> {
+		self.calls.last_mut().unwrap().get_native_call()
+			.map(|call| {
+				NativeCall {
+					func: call.func.clone(),
+					args: call.args.drain(..).collect(),
+				}
+			})
+	}
+
+	fn unwrap_function_call(&mut self) -> &mut FunctionCall {
+		self.calls.last_mut().unwrap().unwrap_function_call()
+	}
+
+	fn reenter_last_call(&mut self) {
+		if let Some(Call::Function(call)) = self.calls.last_mut() {
+			if let Some(idx) = call.return_idx.take() {
+				self.idx = idx;
+			}
+			self.reg_base = call.reg_base;
+		}
+	}
 	
-	fn return_from_call(&mut self, implicit: bool) {
-		let call = self.calls.pop().unwrap();
+	fn return_from_function(&mut self, implicit: bool) {
+		let mut call = self.calls.pop().unwrap();
+		let call = call.unwrap_function_call();
 		if !call.interactive { // If in interactive mode, keep rest of state for next call
 			if implicit {
 				self.push(Value::Nil)
@@ -183,25 +246,27 @@ impl VmState {
 			self.registers.truncate(call.reg_base);
 		}
 		
-		if let Some(call) = self.calls.last_mut() {
-			if let Some(idx) = call.return_idx.take() {
-				self.idx = idx;
-			}
-			self.reg_base = call.reg_base;
-		}
+		self.reenter_last_call();
+	}
+
+	fn return_from_native(&mut self, res: Value) {
+		self.calls.pop().unwrap().unwrap_native_call();
+		self.push(res);
+
+		self.reenter_last_call();
 	}
 	
 	pub fn check_end(&mut self, base_call: usize) -> bool {
 		// Implicit return
-		while self.calls.len() > base_call && self.idx == self.calls.last().unwrap().func.chunk.code.len() {
-			self.return_from_call(true);
+		while self.calls.len() > base_call && self.idx == self.unwrap_function_call().func.chunk.code.len() {
+			self.return_from_function(true);
 		}
 		self.calls.len() == base_call
 	}
 	
 	// Warning: does not reset state on errors; callers should not reuse state after error
-	fn run_instr_unsafe(&mut self, gc: &mut GCHeap) -> Result<(), String> {
-		let func = self.calls.last().unwrap().func.clone();
+	fn run_instr_unsafe(&mut self, gc: &mut GcHeap) -> Result<(), String> {
+		let func = self.unwrap_function_call().func.clone();
 		let instr = func.chunk.code.get(self.idx)
 			.ok_or_else(|| String::from("Jumped to invalid instruction"))?
 			.clone();
@@ -298,11 +363,12 @@ impl VmState {
 						if args.len() != chunk2.arg_cnt as usize {
 							return Err(format!("Expected {} arguments, got {}", chunk2.arg_cnt, args.len()));
 						}
-						self.call_function(func2, args, false);
+						self.call_function(func2, args);
 						jumped = true;
 					},
 					Value::NativeFunction(func2) => {
-						self.push(func2.borrow_mut().call(gc, args)?);
+						self.call_native(func2, args);
+						jumped = true;
 					},
 					_ => {
 						return Err(format!("Cannot call non-function: {}", func2.repr()));
@@ -310,7 +376,7 @@ impl VmState {
 				}
 			},
 			Instr::Return => {
-				self.return_from_call(false);
+				self.return_from_function(false);
 				jumped = true;
 			},
 			Instr::Constant(idx) => {
@@ -494,7 +560,7 @@ impl VmState {
 	// Like run_instr_unsafe, but clears calls and the stack on errors
 	// Does not clear registers
 	// Using this, VmState can be reused in interactive mode even after error
-	fn run_instr(&mut self, gc: &mut GCHeap) -> Result<(), String> {
+	fn run_instr(&mut self, gc: &mut GcHeap) -> Result<(), String> {
 		match self.run_instr_unsafe(gc) {
 			Ok(()) => Ok(()),
 			Err(err) => {
@@ -507,14 +573,14 @@ impl VmState {
 }
 
 
-struct VmArena {
-	vm: GCCell<VmState>,
-	gc: GCHeap,
+pub struct VmArena {
+	vm: GcCell<VmState>,
+	pub gc: GcHeap,
 }
 
 impl VmArena {
 	fn create() -> Self {
-		let mut gc = GCHeap::new();
+		let mut gc = GcHeap::new();
 		let vm = gc.add_cell(VmState::new());
 		vm.borrow_mut().init_globals(&mut gc);
 		VmArena { gc, vm }
@@ -523,15 +589,23 @@ impl VmArena {
 	fn run(&mut self, call_base: usize) -> Result<(), String> {
 		loop {
 			if self.vm.borrow_mut().check_end(call_base) { break }
+
 			self.vm.borrow_mut().run_instr(&mut self.gc)?;
 			self.gc.step();
+			
+			let call = self.vm.borrow_mut().get_native_call();
+			if let Some(call) = call {
+				let res = call.func.borrow_mut().call(self, call.args)?;
+				self.vm.borrow_mut().return_from_native(res);
+				self.gc.step();
+			}
 		}
 		Ok(())
 	}
 	
 	pub fn run_function(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
 		let call_base = self.vm.borrow().calls.len();
-		self.vm.borrow_mut().call_function(self.gc.add(Function::main(func)), vec![], true);
+		self.vm.borrow_mut().call_function(self.gc.add(Function::main(func)), vec![]);
 		self.run(call_base)
 	}
 	
