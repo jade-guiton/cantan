@@ -158,7 +158,7 @@ impl<'a> FunctionContext<'a> {
 		Ok(())
 	}
 	
-	fn add_prim_cst(&mut self, cst: Value<'static>) -> Result<u16, String> {
+	fn add_prim_cst(&mut self, cst: Value) -> Result<u16, String> {
 		if let Some(idx) = self.func.csts.iter().position(|cst2| &cst == cst2) {
 			Ok(idx as u16)
 		} else {

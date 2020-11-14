@@ -1,11 +1,10 @@
 use std::fmt::Write;
 use std::rc::Rc;
 
-use gc_arena::Collect;
-
 use crate::ast::{UnaryOp, BinaryOp};
 use crate::colors::*;
 use crate::value::Value;
+use crate::gc::Primitive;
 
 #[derive(Debug, Clone)]
 #[allow(unused)]
@@ -76,17 +75,17 @@ impl Instr {
 	}
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum CompiledUpvalue {
 	Direct(u16), // Refer to register in parent function
 	Indirect(u16), // Refer to upvalue in parent function
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CompiledFunction {
 	pub child_funcs: Vec<Rc<CompiledFunction>>,
 	pub arg_cnt: u16,
-	pub csts: Vec<Value<'static>>,
+	pub csts: Vec<Value>,
 	pub upvalues: Vec<CompiledUpvalue>,
 	pub classes: Vec<Vec<String>>,
 	pub code: Vec<Instr>,
@@ -117,6 +116,5 @@ impl CompiledFunction {
 	}
 }
 
-unsafe impl Collect for CompiledFunction {
-	fn needs_trace() -> bool { false }
-}
+// Note: This works because the Values in CompiledFunction.csts are guaranteed to be primitive values
+unsafe impl Primitive for CompiledFunction {}

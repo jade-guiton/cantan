@@ -7,33 +7,31 @@ use std::fmt::{self, Write};
 use std::ops::Deref;
 use std::rc::Rc;
 
-use gc_arena::{Collect, CollectionContext, Gc, GcCell, MutationContext};
 use ordered_float::NotNan;
 
 use crate::ast::Primitive;
 use crate::chunk::CompiledFunction;
+use crate::gc::{Trace, TraceCtx, GCRef, GCCell, GCHeap};
 
-#[derive(Collect)]
-#[collect(no_drop)]
-pub enum Upvalue<'gc> {
+#[derive(Trace)]
+pub enum Upvalue {
 	Open(usize),
-	Closed(Value<'gc>),
+	Closed(Value),
 }
 
-#[derive(Collect)]
-#[collect(no_drop)]
-pub struct Function<'gc> {
+#[derive(Trace)]
+pub struct Function {
 	pub chunk: Rc<CompiledFunction>,
-	pub upvalues: Vec<GcCell<'gc, Upvalue<'gc>>>,
+	pub upvalues: Vec<GCCell<Upvalue>>,
 }
 
-impl<'gc> Function<'gc> {
+impl Function {
 	pub fn main(chunk: Rc<CompiledFunction>) -> Self {
 		Function { chunk, upvalues: vec![] }
 	}
 }
 
-// New type to implement Collect
+// New type to implement Trace
 #[derive(Clone, Debug)]
 #[repr(transparent)]
 pub struct NiceFloat(pub NotNan<f64>);
@@ -45,9 +43,9 @@ impl Deref for NiceFloat {
 	}
 }
 
-static_collect!(NiceFloat);
+unsafe impl Trace for NiceFloat {}
 
-// New type to implement Collect
+// New type to implement Trace
 #[derive(Clone, Debug)]
 #[repr(transparent)]
 pub struct NiceStr(pub Box<str>);
@@ -65,58 +63,57 @@ impl Deref for NiceStr {
 	}
 }
 
-static_collect!(NiceStr);
+unsafe impl Trace for NiceStr {}
 
-pub trait NativeFunction = for<'gc, 'ctx> Fn(MutationContext<'gc, 'ctx>, Vec<Value<'gc>>) -> Result<Value<'gc>, String> + 'static;
+pub trait NativeFunction = for<'gc, 'ctx> Fn(&mut GCHeap, Vec<Value>) -> Result<Value, String> + 'static;
 
-pub struct NativeFunctionWrapper<'gc> {
+pub struct NativeFunctionWrapper {
 	pub func: Box<dyn NativeFunction>,
-	pub this: Option<Value<'gc>>,
+	pub this: Option<Value>,
 }
 
-impl<'gc> NativeFunctionWrapper<'gc> {
-	pub fn new(func: impl NativeFunction, this: Option<Value<'gc>>) -> Self {
+impl NativeFunctionWrapper {
+	pub fn new(func: impl NativeFunction, this: Option<Value>) -> Self {
 		NativeFunctionWrapper { func: Box::new(func), this }
 	}
 	
-	pub fn call(&mut self, mc: MutationContext<'gc, '_>, mut args: Vec<Value<'gc>>) -> Result<Value<'gc>, String> {
+	pub fn call(&mut self, gc: &mut GCHeap, mut args: Vec<Value>) -> Result<Value, String> {
 		if let Some(this) = &self.this {
 			args.insert(0, this.clone());
 		}
-		(self.func)(mc, args)
+		(self.func)(gc, args)
 	}
 }
 
-impl fmt::Debug for NativeFunctionWrapper<'_> {
+impl fmt::Debug for NativeFunctionWrapper {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
 		write!(fmt, "NativeFunctionWrapper @ 0x{:x}", self.func.as_ref() as *const _ as *const () as usize)
 	}
 }
 
 // Not sure if this is safe?
-// I don't think a NativeFunction can "contain" a Gc<'gc>, since it is required
+// I don't think a NativeFunction can "contain" a GcRef, since it is required
 // to last for a 'static lifetime, but I'm not 100% sure.
-unsafe impl Collect for NativeFunctionWrapper<'_> {
-	fn trace(&self, cc: CollectionContext) {
+unsafe impl Trace for NativeFunctionWrapper {
+	unsafe fn trace(&self, ctx: TraceCtx) {
 		if let Some(this) = &self.this {
-			this.trace(cc);
+			this.trace(ctx);
 		}
 	}
 }
 
-pub trait NativeIterator<'gc>: Collect + 'gc {
-	fn next(&mut self, mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String>;
+pub trait NativeIterator: Trace {
+	fn next(&mut self, gc: &mut GCHeap) -> Result<Option<Value>, String>;
 }
 
-#[derive(Collect)]
-#[collect(no_drop)]
-pub struct ListIterator<'gc> {
-	list: Vec<Value<'gc>>,
+#[derive(Trace)]
+pub struct ListIterator {
+	list: Vec<Value>,
 	idx: Cell<usize>,
 }
 
-impl<'gc> ListIterator<'gc> {
-	pub fn new(list: Vec<Value<'gc>>) -> Self {
+impl ListIterator {
+	pub fn new(list: Vec<Value>) -> Self {
 		ListIterator {
 			list,
 			idx: Cell::new(0),
@@ -124,8 +121,8 @@ impl<'gc> ListIterator<'gc> {
 	}
 }
 
-impl<'gc> NativeIterator<'gc> for ListIterator<'gc> {
-	fn next(&mut self, _mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String> {
+impl NativeIterator for ListIterator {
+	fn next(&mut self, _gc: &mut GCHeap) -> Result<Option<Value>, String> {
 		if let Some(val) = self.list.get(self.idx.get()).cloned() {
 			self.idx.set(self.idx.get() + 1);
 			Ok(Some(val))
@@ -135,32 +132,31 @@ impl<'gc> NativeIterator<'gc> for ListIterator<'gc> {
 	}
 }
 
-#[derive(Collect)]
-#[collect(no_drop)]
-pub struct IteratorWrapper<'gc> {
-	pub iter: Box<dyn NativeIterator<'gc>>,
+#[derive(Trace)]
+pub struct IteratorWrapper {
+	pub iter: Box<dyn NativeIterator>,
 }
 
-impl<'gc> IteratorWrapper<'gc> {
-	fn new(iter: impl NativeIterator<'gc>) -> Self {
+impl IteratorWrapper {
+	fn new(iter: impl NativeIterator) -> Self {
 		IteratorWrapper { iter: Box::new(iter) }
 	}
 }
 
-impl fmt::Debug for IteratorWrapper<'_> {
+impl fmt::Debug for IteratorWrapper {
 	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
 		write!(fmt, "NativeIteratorWrapper @ 0x{:x}", self.iter.as_ref() as *const _ as *const () as usize)
 	}
 }
 
-pub enum ImmutSequence<'gc, 'seq> {
-	Tuple(Gc<'gc, Vec<Value<'gc>>>),
-	List(std::cell::Ref<'seq, Vec<Value<'gc>>>),
+pub enum ImmutSequence<'seq> {
+	Tuple(GCRef<Vec<Value>>),
+	List(std::cell::Ref<'seq, Vec<Value>>),
 }
 
-impl<'gc, 'seq> Deref for ImmutSequence<'gc, 'seq> {
-	type Target = [Value<'gc>];
-	fn deref(&self) -> &[Value<'gc>] {
+impl<'seq> Deref for ImmutSequence<'seq> {
+	type Target = [Value];
+	fn deref(&self) -> &[Value] {
 		match self {
 			ImmutSequence::Tuple(tuple) => tuple.deref(),
 			ImmutSequence::List(list) => list.deref(),
@@ -168,9 +164,8 @@ impl<'gc, 'seq> Deref for ImmutSequence<'gc, 'seq> {
 	}
 }
 
-#[derive(Clone, Debug, Collect)]
-#[collect(no_drop)]
-pub enum Value<'gc> {
+#[derive(Clone, Trace)]
+pub enum Value {
 	// Unpacked Primitive
 	Nil,
 	Bool(bool),
@@ -178,13 +173,13 @@ pub enum Value<'gc> {
 	Float(NiceFloat),
 	String(NiceStr),
 	
-	Tuple(Gc<'gc, Vec<Value<'gc>>>),
-	List(GcCell<'gc, Vec<Value<'gc>>>),
-	Map(GcCell<'gc, HashMap<Value<'gc>, Value<'gc>>>),
-	Object(GcCell<'gc, HashMap<String, Value<'gc>>>),
-	Function(Gc<'gc, Function<'gc>>),
-	NativeFunction(GcCell<'gc, NativeFunctionWrapper<'gc>>),
-	Iterator(GcCell<'gc, IteratorWrapper<'gc>>),
+	Tuple(GCRef<Vec<Value>>),
+	List(GCCell<Vec<Value>>),
+	Map(GCCell<HashMap<Value, Value>>),
+	Object(GCCell<HashMap<String, Value>>),
+	Function(GCRef<Function>),
+	NativeFunction(GCCell<NativeFunctionWrapper>),
+	Iterator(GCCell<IteratorWrapper>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -216,13 +211,13 @@ macro_rules! get_prim {
 	};
 }
 
-impl<'gc> Value<'gc> {
-	pub fn from_native_func(mc: MutationContext<'gc, '_>, func: impl NativeFunction, this: Option<Value<'gc>>) -> Self {
-		Value::NativeFunction(GcCell::allocate(mc, NativeFunctionWrapper::new(func, this)))
+impl Value {
+	pub fn from_native_func(gc: &mut GCHeap, func: impl NativeFunction, this: Option<Value>) -> Self {
+		Value::NativeFunction(gc.add_cell(NativeFunctionWrapper::new(func, this)))
 	}
 	
-	pub fn from_native_iter(mc: MutationContext<'gc, '_>, iter: impl NativeIterator<'gc>) -> Self {
-		Value::Iterator(GcCell::allocate(mc, IteratorWrapper::new(iter)))
+	pub fn from_native_iter(gc: &mut GCHeap, iter: impl NativeIterator) -> Self {
+		Value::Iterator(gc.add_cell(IteratorWrapper::new(iter)))
 	}
 	
 	pub fn get_type(&self) -> Type {
@@ -245,14 +240,14 @@ impl<'gc> Value<'gc> {
 	
 	get_prim!(get_bool, bool, Bool);
 	get_prim!(get_int, i32, Int);
-	get_prim!(get_list, GcCell<'gc, Vec<Value<'gc>>>, List);
-	get_prim!(get_tuple, Gc<'gc, Vec<Value<'gc>>>, Tuple);
-	get_prim!(get_iter, GcCell<'gc, IteratorWrapper<'gc>>, Iterator);
+	get_prim!(get_list, GCCell<Vec<Value>>, List);
+	get_prim!(get_tuple, GCRef<Vec<Value>>, Tuple);
+	get_prim!(get_iter, GCCell<IteratorWrapper>, Iterator);
 	
-	pub fn get_sequence<'a>(&'a self) -> Result<ImmutSequence<'gc, 'a>, String> {
+	pub fn get_sequence<'a>(&'a self) -> Result<ImmutSequence<'a>, String> {
 		match self {
-			Value::Tuple(tuple) => Ok(ImmutSequence::Tuple(*tuple)),
-			Value::List(list) => Ok(ImmutSequence::List(list.read())),
+			Value::Tuple(tuple) => Ok(ImmutSequence::Tuple(tuple.clone())),
+			Value::List(list) => Ok(ImmutSequence::List(list.borrow())),
 			_ => expected_types("Tuple/List", self),
 		}
 	}
@@ -262,20 +257,6 @@ impl<'gc> Value<'gc> {
 			Ok(s.0.to_string())
 		} else {
 			expected_type(Type::String, self)
-		}
-	}
-	
-	// We can't use .clone() for this, because it keeps lifetimes
-	// intact, and we need to change from 'static to 'gc when
-	// instantiating a constant.
-	pub fn clone_prim<'gc2>(&self) -> Value<'gc2> {
-		match self {
-			Value::Nil => Value::Nil,
-			Value::Bool(b) => Value::Bool(*b),
-			Value::Int(i) => Value::Int(*i),
-			Value::Float(f) => Value::Float(f.clone()),
-			Value::String(s) => Value::String(s.clone()),
-			_ => panic!("Trying to move non-primitive between GCs"),
 		}
 	}
 	
@@ -289,7 +270,7 @@ impl<'gc> Value<'gc> {
 		}
 	}
 	
-	pub fn struct_eq(&self, other: &Value<'gc>) -> bool {
+	pub fn struct_eq(&self, other: &Value) -> bool {
 		match (self, other) {
 			(Value::Nil, Value::Nil) => true,
 			(Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
@@ -302,19 +283,19 @@ impl<'gc> Value<'gc> {
 					t1.iter().zip(t2.deref()).all(|(a,b)| a.struct_eq(b))
 				} else { false },
 			(Value::List(l1), Value::List(l2)) => {
-				let (l1, l2) = (l1.read(), l2.read());
+				let (l1, l2) = (l1.borrow(), l2.borrow());
 				if l1.len() == l2.len() {
 					l1.iter().zip(l2.deref()).all(|(a,b)| a.struct_eq(b))
 				} else { false }
 			},
 			(Value::Map(m1), Value::Map(m2)) => { // Memory equality for keys, structural for values
-				let (m1, m2) = (m1.read(), m2.read());
+				let (m1, m2) = (m1.borrow(), m2.borrow());
 				if m1.len() == m2.len() {
 					m1.iter().all(|(k,v)| m2.get(k).map_or(false, |v2| v.struct_eq(v2)))
 				} else { false }
 			},
 			(Value::Object(o1), Value::Object(o2)) => {
-				let (o1, o2) = (o1.read(), o2.read());
+				let (o1, o2) = (o1.borrow(), o2.borrow());
 				if o1.len() == o2.len() {
 					o1.iter().all(|(k,v)| o2.get(k).map_or(false, |v2| v.struct_eq(v2)))
 				} else { false }
@@ -323,7 +304,7 @@ impl<'gc> Value<'gc> {
 		}
 	}
 	
-	pub fn cmp(&self, other: &Value<'gc>) -> Result<Ordering, String> {
+	pub fn cmp(&self, other: &Value) -> Result<Ordering, String> {
 		match (self, other) {
 			(Value::Int(i1), Value::Int(i2)) =>
 				Ok(i1.cmp(i2)),
@@ -379,7 +360,7 @@ impl<'gc> Value<'gc> {
 				buf
 			},
 			Value::List(list) => {
-				let list = list.read();
+				let list = list.borrow();
 				let mut buf = String::new();
 				write!(buf, "[|").unwrap();
 				for (idx, val) in list.iter().enumerate() {
@@ -392,7 +373,7 @@ impl<'gc> Value<'gc> {
 				buf
 			},
 			Value::Map(map) => {
-				let map = map.read();
+				let map = map.borrow();
 				let mut buf = String::new();
 				write!(buf, "[").unwrap();
 				if map.len() == 0 {
@@ -409,7 +390,7 @@ impl<'gc> Value<'gc> {
 				buf
 			},
 			Value::Object(obj) => {
-				let obj = obj.read();
+				let obj = obj.borrow();
 				let mut buf = String::new();
 				write!(buf, "{{").unwrap();
 				for (idx, (key, val)) in obj.iter().enumerate() {
@@ -422,15 +403,15 @@ impl<'gc> Value<'gc> {
 				buf
 			},
 			Value::Function(func) =>
-				format!("<fn 0x{:x}>", Gc::as_ptr(*func) as usize),
+				format!("<fn 0x{:x}>", func.get_addr() as usize),
 			Value::NativeFunction(func) =>
-				format!("<fn 0x{:x}>", func.as_ptr() as usize),
+				format!("<fn 0x{:x}>", func.get_addr() as usize),
 			Value::Iterator(iter) =>
-				format!("<iter 0x{:x}>", iter.as_ptr() as usize),
+				format!("<iter 0x{:x}>", iter.get_addr() as usize),
 		}
 	}
 	
-	pub fn index(&self, idx: &Value<'gc>) -> Result<Value<'gc>, String> {
+	pub fn index(&self, idx: &Value) -> Result<Value, String> {
 		match self {
 			Value::Tuple(tuple) => {
 				let idx = idx.get_int()?;
@@ -438,13 +419,13 @@ impl<'gc> Value<'gc> {
 					.ok_or_else(|| format!("Trying to index {}-tuple with: {}", tuple.len(), idx))
 			},
 			Value::List(list) => {
-				let list = list.read();
+				let list = list.borrow();
 				let idx = idx.get_int()?;
 				usize::try_from(idx).ok().and_then(|idx| list.get(idx)).cloned()
 					.ok_or_else(|| format!("Trying to index list of length {} with: {}", list.len(), idx))
 			},
 			Value::Map(map) => {
-				Ok(map.read().get(idx).ok_or_else(|| format!("Map does not contain key: {}", idx.repr()))?.clone())
+				Ok(map.borrow().get(idx).ok_or_else(|| format!("Map does not contain key: {}", idx.repr()))?.clone())
 			},
 			_ => {
 				Err(format!("Cannot get index from {:?}", self.get_type()))
@@ -452,10 +433,10 @@ impl<'gc> Value<'gc> {
 		}
 	}
 	
-	pub fn set_index(&self, idx: &Value<'gc>, val: Value<'gc>, mc: MutationContext<'gc, '_>) -> Result<(), String> {
+	pub fn set_index(&self, idx: &Value, val: Value) -> Result<(), String> {
 		match self {
 			Value::List(list) => {
-				let mut list = list.write(mc);
+				let mut list = list.borrow_mut();
 				let idx = idx.get_int()?;
 				let len = list.len();
 				let slot = usize::try_from(idx).ok().and_then(|idx| list.get_mut(idx))
@@ -463,7 +444,7 @@ impl<'gc> Value<'gc> {
 				*slot = val;
 			},
 			Value::Map(map) => {
-				let mut map = map.write(mc);
+				let mut map = map.borrow_mut();
 				let slot = map.get_mut(idx).ok_or_else(|| format!("Map does not contain key: {}", idx.repr()))?;
 				*slot = val;
 			},
@@ -472,14 +453,14 @@ impl<'gc> Value<'gc> {
 		Ok(())
 	}
 	
-	pub fn prop(&self, prop: &str, mc: MutationContext<'gc, '_>) -> Result<Value<'gc>, String> {
+	pub fn prop(&self, prop: &str, gc: &mut GCHeap) -> Result<Value, String> {
 		match self {
 			Value::Object(obj) => {
-				Ok(obj.read().get(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?.clone())
+				Ok(obj.borrow().get(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?.clone())
 			},
 			_ => {
 				if let Some(met) = crate::stdlib::METHODS.get(&self.get_type()).and_then(|mets| mets.get(prop)) {
-					Ok(Value::from_native_func(mc, met, Some(self.clone())))
+					Ok(Value::from_native_func(gc, met, Some(self.clone())))
 				} else {
 					Err(format!("Cannot get prop '{}' of {:?}", prop, self.get_type()))
 				}
@@ -487,10 +468,10 @@ impl<'gc> Value<'gc> {
 		}
 	}
 	
-	pub fn set_prop(&self, prop: &str, val: Value<'gc>, mc: MutationContext<'gc, '_>) -> Result<(), String> {
+	pub fn set_prop(&self, prop: &str, val: Value) -> Result<(), String> {
 		match self {
 			Value::Object(obj) => {
-				let mut obj = obj.write(mc);
+				let mut obj = obj.borrow_mut();
 				let slot = obj.get_mut(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?;
 				*slot = val;
 				Ok(())
@@ -501,20 +482,20 @@ impl<'gc> Value<'gc> {
 		}
 	}
 	
-	pub fn make_iter(&self, mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String> {
+	pub fn make_iter(&self, gc: &mut GCHeap) -> Result<Option<Value>, String> {
 		match self {
 			Value::List(list) => {
-				Ok(Some(Value::from_native_iter(mc, ListIterator::new(list.read().clone()))))
+				Ok(Some(Value::from_native_iter(gc, ListIterator::new(list.borrow().clone()))))
 			},
 			Value::Iterator(_) => Ok(None),
 			_ => Err(format!("Cannot iterate: {}", self.repr())),
 		}
 	}
 	
-	pub fn next(&self, mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String> {
+	pub fn next(&self, gc: &mut GCHeap) -> Result<Option<Value>, String> {
 		match self {
 			Value::Iterator(iter) => {
-				iter.write(mc).iter.next(mc)
+				iter.borrow_mut().iter.next(gc)
 			},
 			_ => Err(format!("{} is not an iterator", self.repr())),
 		}
@@ -524,8 +505,8 @@ impl<'gc> Value<'gc> {
 // Note: This is memory equality, not structural identity;
 // The "==" operator in-language uses struct_eq() instead.
 // This is essentially used in the implementation of maps.
-impl<'gc> PartialEq for Value<'gc> {
-	fn eq(&self, other: &Value<'gc>) -> bool {
+impl PartialEq for Value {
+	fn eq(&self, other: &Value) -> bool {
 		match (self, other) {
 			(Value::Nil, Value::Nil) => true,
 			(Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
@@ -534,19 +515,19 @@ impl<'gc> PartialEq for Value<'gc> {
 			(Value::String(s1), Value::String(s2)) => s1.0 == s2.0,
 			
 			(Value::Tuple(t1), Value::Tuple(t2)) => **t1 == **t2,
-			(Value::List(l1), Value::List(l2)) => l1.as_ptr() == l2.as_ptr(),
-			(Value::Map(m1), Value::Map(m2)) => m1.as_ptr() == m2.as_ptr(),
-			(Value::Object(o1), Value::Object(o2)) => o1.as_ptr() == o2.as_ptr(),
-			(Value::Function(f1), Value::Function(f2)) => Gc::as_ptr(*f1) == Gc::as_ptr(*f2),
-			(Value::NativeFunction(f1), Value::NativeFunction(f2)) => f1.as_ptr() == f2.as_ptr(),
+			(Value::List(l1), Value::List(l2)) => l1.get_addr() == l2.get_addr(),
+			(Value::Map(m1), Value::Map(m2)) => m1.get_addr() == m2.get_addr(),
+			(Value::Object(o1), Value::Object(o2)) => o1.get_addr() == o2.get_addr(),
+			(Value::Function(f1), Value::Function(f2)) => f1.get_addr() == f2.get_addr(),
+			(Value::NativeFunction(f1), Value::NativeFunction(f2)) => f1.get_addr() == f2.get_addr(),
 			_ => false,
 		}
 	}
 }
-impl Eq for Value<'_> {}
+impl Eq for Value {}
 
 // Reminder: 
-impl Hash for Value<'_> {
+impl Hash for Value {
 	fn hash<H: Hasher>(&self, state: &mut H) {
 		self.get_type().hash(state);
 		match self {
@@ -557,17 +538,17 @@ impl Hash for Value<'_> {
 			Value::String(s) => s.0.hash(state),
 			
 			Value::Tuple(values) => values.hash(state),
-			Value::List(list) => list.as_ptr().hash(state),
-			Value::Map(map) => map.as_ptr().hash(state),
-			Value::Object(obj) => obj.as_ptr().hash(state),
-			Value::Function(func) => Gc::as_ptr(*func).hash(state),
-			Value::NativeFunction(func) => func.as_ptr().hash(state),
-			Value::Iterator(iter) => iter.as_ptr().hash(state),
+			Value::List(list) => list.get_addr().hash(state),
+			Value::Map(map) => map.get_addr().hash(state),
+			Value::Object(obj) => obj.get_addr().hash(state),
+			Value::Function(func) => func.get_addr().hash(state),
+			Value::NativeFunction(func) => func.get_addr().hash(state),
+			Value::Iterator(iter) => iter.get_addr().hash(state),
 		}
 	}
 }
 
-impl From<&Primitive> for Value<'_> {
+impl From<&Primitive> for Value {
 	fn from(cst: &Primitive) -> Self {
 		match cst {
 			Primitive::Nil => Value::Nil,
@@ -579,13 +560,13 @@ impl From<&Primitive> for Value<'_> {
 	}
 }
 
-impl From<String> for Value<'_> {
+impl From<String> for Value {
 	fn from(s: String) -> Self {
 		Value::String(NiceStr::from(s))
 	}
 }
 
-impl TryFrom<f64> for Value<'_> {
+impl TryFrom<f64> for Value {
 	type Error = String;
 	fn try_from(f: f64) -> Result<Self, String> {
 		if f.is_finite() {

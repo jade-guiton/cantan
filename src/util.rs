@@ -33,7 +33,7 @@ impl<T: PrimInt> IntSet<T> {
 				IntPlacement::In(start)
 			}
 		} else {
-			let mid_idx = (end-start)/2;
+			let mid_idx = (start+end)/2;
 			if val < self.ranges[mid_idx].start {
 				self.find(val, start, mid_idx)
 			} else {

@@ -1,13 +1,14 @@
 #![feature(trait_alias)]
 
 #[macro_use]
-extern crate gc_arena;
+extern crate cantan_derive;
 
 mod ast;
 mod colors;
 mod compiler;
 mod chunk;
 mod cli;
+mod gc;
 mod grammar;
 mod repl;
 mod stdlib;

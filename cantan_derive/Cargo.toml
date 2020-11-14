@@ -1,0 +1,12 @@
+[package]
+name = "cantan_derive"
+version = "0.1.0"
+authors = ["Luapix <luapixel@gmail.com>"]
+edition = "2018"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+syn = "1.0.46"
+quote = "1.0"

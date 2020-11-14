@@ -1,11 +1,11 @@
 [package]
 name = "cantan"
 version = "0.1.0"
-authors = ["luapix <luapixel@gmail.com>"]
+authors = ["Luapix <luapixel@gmail.com>"]
 edition = "2018"
 
 [dependencies]
-gc-arena = "0.2.0"
+cantan_derive = { path = "./cantan_derive" }
 num-traits = "0.2.12"
 once_cell = "1.4.1"
 ordered-float = "2.0.0"

@@ -4,34 +4,31 @@ use std::convert::TryFrom;
 use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
-use gc_arena::{Collect, Gc, GcCell, MutationContext};
-
 use crate::ast::{UnaryOp, BinaryOp};
 use crate::chunk::*;
 use crate::value::*;
+use crate::gc::{Trace, GCRef, GCCell, GCHeap};
 
-#[derive(Collect)]
-#[collect(no_drop)]
-struct Call<'gc> {
-	func: Gc<'gc, Function<'gc>>,
+#[derive(Trace)]
+struct Call {
+	func: GCRef<Function>,
 	interactive: bool,
 	reg_base: usize,
 	return_idx: Option<usize>,
 }
 
-#[derive(Collect)]
-#[collect(no_drop)]
-pub struct VmState<'gc> {
-	globals: HashMap<String, Value<'gc>>,
-	calls: Vec<Call<'gc>>,
-	registers: Vec<Value<'gc>>,
-	stack: Vec<Value<'gc>>,
-	upvalues: HashMap<usize, GcCell<'gc, Upvalue<'gc>>>,
+#[derive(Trace)]
+pub struct VmState {
+	globals: HashMap<String, Value>,
+	calls: Vec<Call>,
+	registers: Vec<Value>,
+	stack: Vec<Value>,
+	upvalues: HashMap<usize, GCCell<Upvalue>>,
 	reg_base: usize,
 	idx: usize,
 }
 
-impl<'gc> VmState<'gc> {
+impl VmState {
 	pub fn new() -> Self {
 		VmState {
 			globals: HashMap::new(),
@@ -44,11 +41,11 @@ impl<'gc> VmState<'gc> {
 		}
 	}
 	
-	fn init_globals(&mut self, mc: MutationContext<'gc, '_>) {
-		crate::stdlib::create(&mut self.globals, mc);
+	fn init_globals(&mut self, gc: &mut GCHeap) {
+		crate::stdlib::create(&mut self.globals, gc);
 	}
 	
-	fn set_reg(&mut self, reg: u16, val: Value<'gc>) {
+	fn set_reg(&mut self, reg: u16, val: Value) {
 		let reg = self.reg_base + reg as usize;
 		if reg >= self.registers.len() {
 			self.registers.resize(reg + 1, Value::Nil);
@@ -56,26 +53,26 @@ impl<'gc> VmState<'gc> {
 		self.registers[reg] = val;
 	}
 	
-	fn get_raw_reg(&self, reg: usize) -> Result<&Value<'gc>, String> {
+	fn get_raw_reg(&self, reg: usize) -> Result<&Value, String> {
 		self.registers.get(reg)
 			.ok_or_else(|| String::from("Accessing uninitialized register"))
 	}
 	
-	fn get_reg(&self, reg: u16) -> Result<&Value<'gc>, String> {
+	fn get_reg(&self, reg: u16) -> Result<&Value, String> {
 		let reg = self.reg_base + reg as usize;
 		self.get_raw_reg(reg)
 	}
 	
-	fn close_reg_raw(&mut self, mc: MutationContext<'gc, '_>, reg: usize) {
+	fn close_reg_raw(&mut self, reg: usize) {
 		if let Some(cell) = self.upvalues.remove(&reg) {
 			let val = self.registers[reg].clone();
-			*cell.write(mc) = Upvalue::Closed(val);
+			*cell.borrow_mut() = Upvalue::Closed(val);
 		}
 	}
 	
-	fn drop_reg(&mut self, mc: MutationContext<'gc, '_>, reg: u16) {
+	fn drop_reg(&mut self, reg: u16) {
 		let reg = self.reg_base + reg as usize;
-		self.close_reg_raw(mc, reg);
+		self.close_reg_raw(reg);
 		
 		if reg == self.registers.len() - 1 {
 			self.registers.pop();
@@ -84,48 +81,48 @@ impl<'gc> VmState<'gc> {
 		}
 	}
 	
-	fn get_upv(&self, upv: &Upvalue<'gc>) -> Result<Value<'gc>, String> {
+	fn get_upv(&self, upv: &Upvalue) -> Result<Value, String> {
 		match upv {
 			Upvalue::Open(reg) => Ok(self.get_raw_reg(*reg as usize)?.clone()),
 			Upvalue::Closed(val) => Ok(val.clone()),
 		}
 	}
 	
-	fn make_upv(&mut self, mc: MutationContext<'gc, '_>, reg: u16) -> GcCell<'gc, Upvalue<'gc>> {
+	fn make_upv(&mut self, gc: &mut GCHeap, reg: u16) -> GCCell<Upvalue> {
 		let reg = self.reg_base + reg as usize;
 		if let Some(upv) = self.upvalues.get(&reg) {
-			*upv
+			upv.clone()
 		} else {
-			let upv = GcCell::allocate(mc, Upvalue::Open(reg));
-			self.upvalues.insert(reg, upv);
+			let upv = gc.add_cell(Upvalue::Open(reg));
+			self.upvalues.insert(reg, upv.clone());
 			upv
 		}
 	}
 	
-	pub fn get_global(&self, name: &str) -> Result<Value<'gc>, String> {
+	pub fn get_global(&self, name: &str) -> Result<Value, String> {
 		self.globals.get(name).cloned()
 			.ok_or_else(|| format!("Accessing undefined global '{}'", name))
 	}
 	
-	pub fn push(&mut self, val: Value<'gc>) {
+	pub fn push(&mut self, val: Value) {
 		self.stack.push(val);
 	}
 	
-	pub fn pop(&mut self) -> Result<Value<'gc>, String> {
+	pub fn pop(&mut self) -> Result<Value, String> {
 		self.stack.pop()
 			.ok_or_else(|| String::from("Popping from empty stack"))
 	}
 	
-	fn pop_n(&mut self, n: usize) -> Result<Vec<Value<'gc>>, String> {
+	fn pop_n(&mut self, n: usize) -> Result<Vec<Value>, String> {
 		let start = self.stack.len().checked_sub(n)
 			.ok_or_else(|| String::from("Popping too many values from stack"))?;
 		Ok(self.stack.drain(start..).collect())
 	}
 	
-	fn get_cst(&self, func: &CompiledFunction, idx: u16) -> Result<Value<'gc>, String> {
+	fn get_cst(&self, func: &CompiledFunction, idx: u16) -> Result<Value, String> {
 		let cst = func.csts.get(idx as usize)
 			.ok_or_else(|| String::from("Accessing undefined constant"))?;
-		Ok(cst.clone_prim())
+		Ok(cst.clone())
 	}
 	
 	fn jump(&mut self, rel: i16) {
@@ -136,7 +133,7 @@ impl<'gc> VmState<'gc> {
 		}
 	}
 	
-	fn call_function(&mut self, func: Gc<'gc, Function<'gc>>, mut args: Vec<Value<'gc>>, no_return: bool) {
+	fn call_function(&mut self, func: GCRef<Function>, mut args: Vec<Value>, no_return: bool) {
 		if !no_return {
 			let last = self.calls.last_mut().unwrap();
 			last.return_idx = Some(self.idx + 1);
@@ -161,11 +158,11 @@ impl<'gc> VmState<'gc> {
 	// This means that the function's registers won't be dropped after execution,
 	// and some more code within the same scope can be run afterwards.
 	// Used in REPL.
-	fn call_interactive(&mut self, mc: MutationContext<'gc, '_>, func: Rc<CompiledFunction>) {
-		assert!(self.calls.len() == 0);
+	fn call_interactive(&mut self, gc: &mut GCHeap, func: Rc<CompiledFunction>) {
+		assert!(self.calls.is_empty());
 		
 		self.calls.push(Call {
-			func: Gc::allocate(mc, Function::main(func)),
+			func: gc.add(Function::main(func)),
 			interactive: true,
 			reg_base: 0,
 			return_idx: None,
@@ -174,14 +171,14 @@ impl<'gc> VmState<'gc> {
 		self.idx = 0;
 	}
 	
-	fn return_from_call(&mut self, mc: MutationContext<'gc, '_>, implicit: bool) {
+	fn return_from_call(&mut self, implicit: bool) {
 		let call = self.calls.pop().unwrap();
 		if !call.interactive { // If in interactive mode, keep rest of state for next call
 			if implicit {
 				self.push(Value::Nil)
 			}
 			for reg in call.reg_base .. self.registers.len() {
-				self.close_reg_raw(mc, reg);
+				self.close_reg_raw(reg);
 			}
 			self.registers.truncate(call.reg_base);
 		}
@@ -194,17 +191,17 @@ impl<'gc> VmState<'gc> {
 		}
 	}
 	
-	pub fn check_end(&mut self, mc: MutationContext<'gc, '_>, base_call: usize) -> bool {
+	pub fn check_end(&mut self, base_call: usize) -> bool {
 		// Implicit return
 		while self.calls.len() > base_call && self.idx == self.calls.last().unwrap().func.chunk.code.len() {
-			self.return_from_call(mc, true);
+			self.return_from_call(true);
 		}
 		self.calls.len() == base_call
 	}
 	
 	// Warning: does not reset state on errors; callers should not reuse state after error
-	fn run_instr_unsafe(&mut self, mc: MutationContext<'gc, '_>) -> Result<(), String> {
-		let func = self.calls.last().unwrap().func;
+	fn run_instr_unsafe(&mut self, gc: &mut GCHeap) -> Result<(), String> {
+		let func = self.calls.last().unwrap().func.clone();
 		let instr = func.chunk.code.get(self.idx)
 			.ok_or_else(|| String::from("Jumped to invalid instruction"))?
 			.clone();
@@ -219,7 +216,7 @@ impl<'gc> VmState<'gc> {
 			Instr::LoadUpv(upv_idx) => {
 				let upv = func.upvalues.get(upv_idx as usize)
 					.ok_or_else(|| String::from("Invalid upvalue index"))?;
-				self.push(self.get_upv(&upv.read())?);
+				self.push(self.get_upv(&upv.borrow())?);
 			},
 			Instr::LoadGlobal(name_idx) => {
 				let name = self.get_cst(&func.chunk, name_idx)?.get_string()?;
@@ -233,7 +230,7 @@ impl<'gc> VmState<'gc> {
 			Instr::StoreUpv(upv_idx) => {
 				let upv = func.upvalues.get(upv_idx as usize)
 					.ok_or_else(|| String::from("Invalid upvalue index"))?;
-				match upv.write(mc).deref_mut() {
+				match upv.borrow_mut().deref_mut() {
 					Upvalue::Open(reg) => {
 						let val = self.pop()?;
 						let slot = self.registers.get_mut(*reg)
@@ -246,7 +243,7 @@ impl<'gc> VmState<'gc> {
 				};
 			},
 			Instr::Drop(reg) => {
-				self.drop_reg(mc, reg);
+				self.drop_reg(reg);
 			},
 			Instr::Discard => {
 				self.pop()?;
@@ -280,16 +277,16 @@ impl<'gc> VmState<'gc> {
 				for upv in &chunk2.upvalues {
 					match upv {
 						CompiledUpvalue::Direct(reg) => {
-							upvalues.push(self.make_upv(mc, *reg));
+							upvalues.push(self.make_upv(gc, *reg));
 						},
 						CompiledUpvalue::Indirect(upv_idx) => {
-							let upv = func.upvalues.get(*upv_idx as usize).copied()
+							let upv = func.upvalues.get(*upv_idx as usize).cloned()
 								.ok_or_else(|| String::from("Child function references undefined upvalue"))?;
 							upvalues.push(upv);
 						},
 					}
 				}
-				let func2 = Gc::allocate(mc, Function { chunk: chunk2, upvalues });
+				let func2 = gc.add(Function { chunk: chunk2, upvalues });
 				self.push(Value::Function(func2));
 			},
 			Instr::Call(arg_cnt) => {
@@ -305,7 +302,7 @@ impl<'gc> VmState<'gc> {
 						jumped = true;
 					},
 					Value::NativeFunction(func2) => {
-						self.push(func2.write(mc).call(mc, args)?);
+						self.push(func2.borrow_mut().call(gc, args)?);
 					},
 					_ => {
 						return Err(format!("Cannot call non-function: {}", func2.repr()));
@@ -313,7 +310,7 @@ impl<'gc> VmState<'gc> {
 				}
 			},
 			Instr::Return => {
-				self.return_from_call(mc, false);
+				self.return_from_call(false);
 				jumped = true;
 			},
 			Instr::Constant(idx) => {
@@ -321,25 +318,25 @@ impl<'gc> VmState<'gc> {
 			},
 			Instr::NewTuple(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
-				self.push(Value::Tuple(Gc::allocate(mc, values)));
+				self.push(Value::Tuple(gc.add(values)));
 			},
 			Instr::NewList(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
-				self.push(Value::List(GcCell::allocate(mc, values)));
+				self.push(Value::List(gc.add_cell(values)));
 			},
 			Instr::NewMap(cnt) => {
 				let mut values = self.pop_n(2 * (cnt as usize))?;
 				let (mut keys, mut values): (Vec<(usize,Value)>,Vec<(usize,Value)>) =
 					values.drain(..).enumerate().partition(|(i,_)| i % 2 == 0);
 				let map: HashMap<Value, Value> = keys.drain(..).map(|(_,v)| v).zip(values.drain(..).map(|(_,v)| v)).collect();
-				self.push(Value::Map(GcCell::allocate(mc, map)));
+				self.push(Value::Map(gc.add_cell(map)));
 			},
 			Instr::NewObject(class_idx) => {
 				let class = func.chunk.classes.get(class_idx as usize).ok_or_else(|| String::from("Using undefined object class"))?;
 				let mut values = self.pop_n(class.len())?;
 				let obj: HashMap<String, Value> = class.iter().cloned()
 					.zip(values.drain(..)).collect();
-				self.push(Value::Object(GcCell::allocate(mc, obj)));
+				self.push(Value::Object(gc.add_cell(obj)));
 			},
 			Instr::Binary(op) => {
 				let b = self.pop()?;
@@ -362,10 +359,10 @@ impl<'gc> VmState<'gc> {
 					},
 					BinaryOp::Plus if a.get_type() == Type::List => {
 						let a = a.get_list().unwrap();
-						let mut a = a.read().deref().clone();
+						let mut a = a.borrow().deref().clone();
 						let b = b.get_list()?;
-						a.extend_from_slice(b.read().deref());
-						self.push(Value::List(GcCell::allocate(mc, a)));
+						a.extend_from_slice(b.borrow().deref());
+						self.push(Value::List(gc.add_cell(a)));
 					},
 					BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Times | BinaryOp::Modulo
 							if a.get_type() == Type::Int && b.get_type() == Type::Int => {
@@ -459,26 +456,26 @@ impl<'gc> VmState<'gc> {
 				let val = self.pop()?;
 				let idx = self.pop()?;
 				let coll = self.pop()?;
-				coll.set_index(&idx, val, mc)?;
+				coll.set_index(&idx, val)?;
 			},
 			Instr::Prop(cst_idx) => {
 				let obj = self.pop()?;
 				let idx = self.get_cst(&func.chunk, cst_idx)?.get_string()?;
-				self.push(obj.prop(&idx, mc)?);
+				self.push(obj.prop(&idx, gc)?);
 			},
 			Instr::SetProp(cst_idx) => {
 				let val = self.pop()?;
 				let obj = self.pop()?;
 				let idx = self.get_cst(&func.chunk, cst_idx)?.get_string()?;
-				obj.set_prop(&idx, val, mc)?;
+				obj.set_prop(&idx, val)?;
 			},
 			Instr::Next(iter_reg) => {
 				let mut iter = self.get_reg(iter_reg)?;
-				if let Some(new_iter) = iter.make_iter(mc)? {
+				if let Some(new_iter) = iter.make_iter(gc)? {
 					self.set_reg(iter_reg, new_iter);
 					iter = self.get_reg(iter_reg)?;
 				}
-				if let Some(value) = iter.next(mc)? {
+				if let Some(value) = iter.next(gc)? {
 					self.push(value);
 					self.push(Value::Bool(true));
 				} else {
@@ -497,8 +494,8 @@ impl<'gc> VmState<'gc> {
 	// Like run_instr_unsafe, but clears calls and the stack on errors
 	// Does not clear registers
 	// Using this, VmState can be reused in interactive mode even after error
-	fn run_instr(&mut self, mc: MutationContext<'gc, '_>) -> Result<(), String> {
-		match self.run_instr_unsafe(mc) {
+	fn run_instr(&mut self, gc: &mut GCHeap) -> Result<(), String> {
+		match self.run_instr_unsafe(gc) {
 			Ok(()) => Ok(()),
 			Err(err) => {
 				self.calls.clear();
@@ -510,39 +507,37 @@ impl<'gc> VmState<'gc> {
 }
 
 
-type MutVmState<'gc> = GcCell<'gc, VmState<'gc>>;
-
-make_arena!(pub VmArena, MutVmState);
+struct VmArena {
+	vm: GCCell<VmState>,
+	gc: GCHeap,
+}
 
 impl VmArena {
 	fn create() -> Self {
-		let mut arena = VmArena::new(gc_arena::ArenaParameters::default(),
-			|mc| GcCell::allocate(mc, VmState::new()));
-		arena.mutate(|mc, state| state.write(mc).init_globals(mc));
-		arena
+		let mut gc = GCHeap::new();
+		let vm = gc.add_cell(VmState::new());
+		vm.borrow_mut().init_globals(&mut gc);
+		VmArena { gc, vm }
 	}
 	
 	fn run(&mut self, call_base: usize) -> Result<(), String> {
 		loop {
-			if self.mutate(|mc, state| state.write(mc).check_end(mc, call_base)) { break }
-			self.mutate(|mc, state| state.write(mc).run_instr(mc))?
+			if self.vm.borrow_mut().check_end(call_base) { break }
+			self.vm.borrow_mut().run_instr(&mut self.gc)?;
+			self.gc.step();
 		}
 		Ok(())
 	}
 	
 	pub fn run_function(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
-		let call_base = self.root.read().calls.len();
-		self.mutate(|mc, state| {
-			state.write(mc).call_function(Gc::allocate(mc, Function::main(func)), vec![], true);
-		});
+		let call_base = self.vm.borrow().calls.len();
+		self.vm.borrow_mut().call_function(self.gc.add(Function::main(func)), vec![], true);
 		self.run(call_base)
 	}
 	
 	pub fn run_interactive(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
-		let call_base = self.root.read().calls.len();
-		self.mutate(|mc, state| {
-			state.write(mc).call_interactive(mc, func);
-		});
+		let call_base = self.vm.borrow().calls.len();
+		self.vm.borrow_mut().call_interactive(&mut self.gc, func);
 		self.run(call_base)
 	}
 }

@@ -4,21 +4,21 @@ use std::convert::TryFrom;
 use std::iter::Iterator;
 use std::ops::Deref;
 
-use gc_arena::{Collect, Gc, GcCell, MutationContext};
 use once_cell::sync::Lazy;
 use unicode_segmentation::GraphemeCursor;
 
 use crate::value::{expected, NativeIterator, Type, Value};
+use crate::gc::{Trace, Primitive, GCHeap};
 
 // To avoid writing the same type signature every time
 macro_rules! native_func {
-	($id:ident, $mc:ident, $args:ident, $block:block) => {
-		fn $id<'gc>($mc: MutationContext<'gc, '_>, $args: Vec<Value<'gc>>) -> Result<Value<'gc>, String> {
+	($id:ident, $gc:ident, $args:ident, $block:block) => {
+		fn $id($gc: &mut GCHeap, $args: Vec<Value>) -> Result<Value, String> {
 			$block
 		}
 	};
-	($id:ident, $args:ident, $block:block) => { native_func!($id, _mc, $args, $block); };
-	($id:ident, $block:block) => { native_func!($id, _mc, _args, $block); };
+	($id:ident, $args:ident, $block:block) => { native_func!($id, _gc, $args, $block); };
+	($id:ident, $block:block) => { native_func!($id, _gc, _args, $block); };
 }
 
 fn check_arg_cnt(exp: usize, cnt: usize) -> Result<(), String> {
@@ -70,7 +70,7 @@ fn wrap_index(idx: i32, len: usize) -> Option<usize> {
 	}
 }
 
-native_func!(seq_sub, mc, args, {
+native_func!(seq_sub, gc, args, {
 	if args.len() < 2 || args.len() > 3 {
 		return expected("1/2 arguments", &(args.len() - 1).to_string());
 	}
@@ -86,48 +86,48 @@ native_func!(seq_sub, mc, args, {
 				start, end.map(|i| i.to_string()).unwrap_or_else(String::new), seq.len())
 		)?.to_vec();
 	match &args[0] {
-		Value::Tuple(_) => Ok(Value::Tuple(Gc::allocate(mc, sub))),
-		Value::List(_) => Ok(Value::List(GcCell::allocate(mc, sub))),
+		Value::Tuple(_) => Ok(Value::Tuple(gc.add(sub))),
+		Value::List(_) => Ok(Value::List(gc.add_cell(sub))),
 		_ => unimplemented!(),
 	}
 });
 
-native_func!(seq_to_iter, mc, args, {
+native_func!(seq_to_iter, gc, args, {
 	check_arg_cnt(0, args.len() - 1)?;
-	args[0].make_iter(mc).transpose().unwrap()
+	args[0].make_iter(gc).transpose().unwrap()
 });
 
-native_func!(tuple_to_list, mc, args, {
+native_func!(tuple_to_list, gc, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let tuple = args[0].get_tuple()?;
-	Ok(Value::List(GcCell::allocate(mc, tuple.deref().clone())))
+	Ok(Value::List(gc.add_cell(tuple.deref().clone())))
 });
 
-native_func!(list_push, mc, args, {
+native_func!(list_push, args, {
 	check_arg_cnt(1, args.len() - 1)?;
 	let list = args[0].get_list()?;
-	list.write(mc).push(args[1].clone());
+	list.borrow_mut().push(args[1].clone());
 	Ok(Value::Nil)
 });
 
-native_func!(list_insert, mc, args, {
+native_func!(list_insert, args, {
 	check_arg_cnt(2, args.len() - 1)?;
 	let list = args[0].get_list()?;
-	let len = list.read().len();
+	let len = list.borrow().len();
 	let idx = args[2].get_int()?;
 	if let Some(idx) = usize::try_from(idx).ok()
 			.filter(|idx| *idx <= len) {
-		list.write(mc).insert(idx, args[1].clone());
+		list.borrow_mut().insert(idx, args[1].clone());
 		Ok(Value::Nil)
 	} else {
 		Err(format!("Cannot insert at position {} in list of length {}", idx, len))
 	}
 });
 
-native_func!(list_pop, mc, args, {
+native_func!(list_pop, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let list = args[0].get_list()?;
-	let mut list = list.write(mc);
+	let mut list = list.borrow_mut();
 	if let Some(val) = list.pop() {
 		Ok(val)
 	} else {
@@ -135,23 +135,22 @@ native_func!(list_pop, mc, args, {
 	}
 });
 
-native_func!(list_to_tuple, mc, args, {
+native_func!(list_to_tuple, gc, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let list = args[0].get_list()?;
-	let list = list.read();
-	Ok(Value::Tuple(Gc::allocate(mc, list.deref().clone())))
+	let list = list.borrow();
+	Ok(Value::Tuple(gc.add(list.deref().clone())))
 });
 
-#[derive(Collect)]
-#[collect(no_drop)]
+#[derive(Trace)]
 struct IntIterator {
 	next: Cell<i32>,
 	until: i32,
 	step: i32,
 }
 
-impl<'gc> NativeIterator<'gc> for IntIterator {
-	fn next(&mut self, _mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String> {
+impl NativeIterator for IntIterator {
+	fn next(&mut self, _gc: &mut GCHeap) -> Result<Option<Value>, String> {
 		let next = self.next.get();
 		if next < self.until {
 			self.next.set(next + self.step);
@@ -175,18 +174,18 @@ fn check_range_args(args: &[Value]) -> Result<(Option<i32>, i32, i32), String> {
 	Ok((start, until, step))
 }
 
-native_func!(xrange, mc, args, {
+native_func!(xrange, gc, args, {
 	let (start, until, step) = check_range_args(&args)?;
-	Ok(Value::from_native_iter(mc, IntIterator {
+	Ok(Value::from_native_iter(gc, IntIterator {
 		next: Cell::new(start.unwrap_or(0)),
 		until,
 		step
 	}))
 });
 
-native_func!(range, mc, args, {
+native_func!(range, gc, args, {
 	let (start, until, step) = check_range_args(&args)?;
-	Ok(Value::from_native_iter(mc, IntIterator {
+	Ok(Value::from_native_iter(gc, IntIterator {
 		next: Cell::new(start.unwrap_or(1)),
 		until: until + 1,
 		step
@@ -198,7 +197,7 @@ struct CharIterator {
 	offset: usize,
 	cursor: GraphemeCursor,
 }
-static_collect!(CharIterator);
+unsafe impl Primitive for CharIterator {}
 
 impl CharIterator {
 	fn new(string: String) -> Self {
@@ -211,8 +210,8 @@ impl CharIterator {
 	}
 }
 
-impl<'gc> NativeIterator<'gc> for CharIterator {
-	fn next(&mut self, _mc: MutationContext<'gc, '_>) -> Result<Option<Value<'gc>>, String> {
+impl NativeIterator for CharIterator {
+	fn next(&mut self, _gc: &mut GCHeap) -> Result<Option<Value>, String> {
 		let next = self.cursor.next_boundary(&self.string, 0)
 			.map_err(|_| String::from("Error during iteration over string"))?;
 		match next {
@@ -226,18 +225,18 @@ impl<'gc> NativeIterator<'gc> for CharIterator {
 	}
 }
 
-native_func!(str_chars, mc, args, {
+native_func!(str_chars, gc, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let s = args[0].get_string()?;
-	Ok(Value::from_native_iter(mc, CharIterator::new(s)))
+	Ok(Value::from_native_iter(gc, CharIterator::new(s)))
 });
 
-native_func!(iter_join, mc, args, {
+native_func!(iter_join, gc, args, {
 	if args.len() > 2 {
 		return expected("0/1 arguments", &(args.len() - 1).to_string());
 	}
 	let iter = args[0].get_iter()?;
-	let mut iter = iter.write(mc);
+	let mut iter = iter.borrow_mut();
 	let sep = if args.len() == 2 {
 		Some(args[1].get_string()?)
 	} else {
@@ -246,7 +245,7 @@ native_func!(iter_join, mc, args, {
 	
 	let mut buf = String::new();
 	let mut first = true;
-	while let Some(val) = iter.iter.next(mc)? {
+	while let Some(val) = iter.iter.next(gc)? {
 		if first {
 			first = false;
 		} else if let Some(ref sep) = sep {
@@ -258,45 +257,45 @@ native_func!(iter_join, mc, args, {
 	Ok(Value::from(buf))
 });
 
-native_func!(iter_to_list, mc, args, {
+native_func!(iter_to_list, gc, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let iter = args[0].get_iter()?;
-	let mut iter = iter.write(mc);
+	let mut iter = iter.borrow_mut();
 	
 	let mut values = vec![];
-	while let Some(val) = iter.iter.next(mc)? {
+	while let Some(val) = iter.iter.next(gc)? {
 		values.push(val);
 	}
 	
-	Ok(Value::List(GcCell::allocate(mc, values)))
+	Ok(Value::List(gc.add_cell(values)))
 });
-native_func!(iter_to_tuple, mc, args, {
+native_func!(iter_to_tuple, gc, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let iter = args[0].get_iter()?;
-	let mut iter = iter.write(mc);
+	let mut iter = iter.borrow_mut();
 	
 	let mut values = vec![];
-	while let Some(val) = iter.iter.next(mc)? {
+	while let Some(val) = iter.iter.next(gc)? {
 		values.push(val);
 	}
 	
-	Ok(Value::Tuple(Gc::allocate(mc, values)))
+	Ok(Value::Tuple(gc.add(values)))
 });
 
-native_func!(iter_next, mc, args, {
+native_func!(iter_next, gc, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let iter = args[0].get_iter()?;
-	let mut iter = iter.write(mc);
+	let mut iter = iter.borrow_mut();
 	
-	let res = match iter.iter.next(mc)? {
+	let res = match iter.iter.next(gc)? {
 		Some(val) => vec![Value::Bool(true), val],
 		None => vec![Value::Bool(false)],
 	};
-	Ok(Value::Tuple(Gc::allocate(mc, res)))
+	Ok(Value::Tuple(gc.add(res)))
 });
 
 
-type NativeFn = for<'gc> fn(MutationContext<'gc, '_>, Vec<Value<'gc>>) -> Result<Value<'gc>, String>;
+type NativeFn = fn(&mut GCHeap, Vec<Value>) -> Result<Value, String>;
 
 pub static FUNCTIONS: Lazy<HashMap<String, NativeFn>> = Lazy::new(|| [
 	("log", log as NativeFn),
@@ -336,8 +335,8 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 	])
 ].iter().map(|(t,p)| (*t, p.iter().map(|(s,f)| (s.to_string(), *f)).collect())).collect());
 
-pub fn create<'gc>(globals: &mut HashMap<String, Value<'gc>>, mc: MutationContext<'gc, '_>) {
+pub fn create(globals: &mut HashMap<String, Value>, gc: &mut GCHeap) {
 	for (name, func) in FUNCTIONS.deref() {
-		globals.insert(name.clone(), Value::from_native_func(mc, func, None));
+		globals.insert(name.clone(), Value::from_native_func(gc, func, None));
 	}
 }

@@ -1,3 +1,5 @@
-/target
+target
 *.sublime-*
 examples
+cantan_derive/target
+.vscode
