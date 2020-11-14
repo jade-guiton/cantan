@@ -19,7 +19,7 @@ struct FunctionCall {
 
 #[derive(Trace)]
 struct NativeCall {
-	func: GcCell<NativeFunctionWrapper>,
+	func: GcRef<NativeFunctionWrapper>,
 	args: Vec<Value>,
 }
 
@@ -163,7 +163,12 @@ impl VmState {
 		}
 	}
 
-	fn call_function(&mut self, func: GcRef<Function>, mut args: Vec<Value>) {
+	fn call_function(&mut self, func: GcRef<Function>, mut args: Vec<Value>) -> Result<(), String> {
+		let chunk = &func.chunk;
+		if args.len() != chunk.arg_cnt as usize {
+			return Err(format!("Expected {} arguments, got {}", chunk.arg_cnt, args.len()));
+		}
+
 		if let Some(Call::Function(call)) = self.calls.last_mut() {
 			call.return_idx = Some(self.idx + 1);
 		}
@@ -181,9 +186,11 @@ impl VmState {
 		}
 		
 		self.idx = 0;
+
+		Ok(())
 	}
 
-	fn call_native(&mut self, func: GcCell<NativeFunctionWrapper>, args: Vec<Value>) {
+	fn call_native(&mut self, func: GcRef<NativeFunctionWrapper>, args: Vec<Value>) {
 		if let Some(Call::Function(call)) = self.calls.last_mut() {
 			call.return_idx = Some(self.idx + 1);
 		}
@@ -255,13 +262,22 @@ impl VmState {
 
 		self.reenter_last_call();
 	}
-	
-	pub fn check_end(&mut self, base_call: usize) -> bool {
+
+	pub fn stack_size(&self) -> usize {
+		self.calls.len()
+	}
+	pub fn check_stack_size(&self, base_call: usize) -> bool {
+		self.stack_size() == base_call
+	}
+
+	pub fn check_end(&mut self) {
 		// Implicit return
-		while self.calls.len() > base_call && self.idx == self.unwrap_function_call().func.chunk.code.len() {
+		while {
+				if let Some(Call::Function(call)) = self.calls.last() {
+					self.idx == call.func.chunk.code.len()
+				} else { false } } {
 			self.return_from_function(true);
 		}
-		self.calls.len() == base_call
 	}
 	
 	// Warning: does not reset state on errors; callers should not reuse state after error
@@ -359,11 +375,7 @@ impl VmState {
 				let func2 = self.pop()?;
 				match func2 {
 					Value::Function(func2) => {
-						let chunk2 = &func2.chunk;
-						if args.len() != chunk2.arg_cnt as usize {
-							return Err(format!("Expected {} arguments, got {}", chunk2.arg_cnt, args.len()));
-						}
-						self.call_function(func2, args);
+						self.call_function(func2, args)?;
 						jumped = true;
 					},
 					Value::NativeFunction(func2) => {
@@ -554,6 +566,8 @@ impl VmState {
 			self.idx += 1;
 		}
 		
+		self.check_end();
+		
 		Ok(())
 	}
 	
@@ -587,15 +601,18 @@ impl VmArena {
 	}
 	
 	fn run(&mut self, call_base: usize) -> Result<(), String> {
+		self.vm.borrow_mut().check_end(); // In case function is empty
+		if self.vm.borrow().check_stack_size(call_base) { return Ok(()); }
+		
 		loop {
-			if self.vm.borrow_mut().check_end(call_base) { break }
-
 			self.vm.borrow_mut().run_instr(&mut self.gc)?;
 			self.gc.step();
+
+			if self.vm.borrow().check_stack_size(call_base) { break }
 			
 			let call = self.vm.borrow_mut().get_native_call();
 			if let Some(call) = call {
-				let res = call.func.borrow_mut().call(self, call.args)?;
+				let res = call.func.call(self, call.args)?;
 				self.vm.borrow_mut().return_from_native(res);
 				self.gc.step();
 			}
@@ -603,13 +620,20 @@ impl VmArena {
 		Ok(())
 	}
 	
-	pub fn run_function(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
-		let call_base = self.vm.borrow().calls.len();
-		self.vm.borrow_mut().call_function(self.gc.add(Function::main(func)), vec![]);
+	fn run_function(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
+		let call_base = self.vm.borrow().stack_size();
+		self.vm.borrow_mut().call_function(self.gc.add(Function::main(func)), vec![])?;
 		self.run(call_base)
 	}
+
+	pub fn call_function(&mut self, func: GcRef<Function>, args: Vec<Value>) -> Result<Value, String> {
+		let call_base = self.vm.borrow().stack_size();
+		self.vm.borrow_mut().call_function(func, args)?;
+		self.run(call_base)?;
+		self.vm.borrow_mut().pop()
+	}
 	
-	pub fn run_interactive(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
+	fn run_interactive(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
 		let call_base = self.vm.borrow().calls.len();
 		self.vm.borrow_mut().call_interactive(&mut self.gc, func);
 		self.run(call_base)

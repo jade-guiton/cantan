@@ -7,7 +7,7 @@ use std::ops::Deref;
 use once_cell::sync::Lazy;
 use unicode_segmentation::GraphemeCursor;
 
-use crate::value::{expected, NativeIterator, Type, Value};
+use crate::value::{expected, expected_type, NativeIterator, Type, Value};
 use crate::gc::{Trace, Primitive, GcHeap};
 use crate::vm::VmArena;
 
@@ -96,6 +96,36 @@ native_func!(seq_sub, vm, args, {
 native_func!(seq_to_iter, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	args[0].make_iter(&mut vm.gc).transpose().unwrap()
+});
+
+native_func!(seq_map, vm, args, {
+	if args.len() != 2 {
+		return expected("1 argument", &(args.len() - 1).to_string());
+	}
+	let seq = args[0].get_sequence()?;
+
+	let mut mapped = vec![];
+	match &args[1] {
+		Value::Function(func) => {
+			for x in seq.deref() {
+				let y = vm.call_function(func.clone(), vec![x.clone()])?;
+				mapped.push(y);
+			}
+		},
+		Value::NativeFunction(func) => {
+			for x in seq.deref() {
+				let y = func.call(vm, vec![x.clone()])?;
+				mapped.push(y);
+			}
+		},
+		_ => return expected_type(Type::Function, &args[1]),
+	}
+	
+	match &args[0] {
+		Value::Tuple(_) => Ok(Value::Tuple(vm.gc.add(mapped))),
+		Value::List(_) => Ok(Value::List(vm.gc.add_cell(mapped))),
+		_ => unimplemented!(),
+	}
 });
 
 native_func!(tuple_to_list, vm, args, {
@@ -314,6 +344,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("size", seq_size as NativeFn),
 		("sub", seq_sub),
 		("to_iter", seq_to_iter),
+		("map", seq_map),
 		("to_list", tuple_to_list),
 	]),
 	(Type::List, vec![
@@ -323,6 +354,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("size", seq_size),
 		("sub", seq_sub),
 		("to_iter", seq_to_iter),
+		("map", seq_map),
 		("to_tuple", list_to_tuple),
 	]),
 	(Type::String, vec![

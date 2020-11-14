@@ -78,7 +78,7 @@ impl NativeFunctionWrapper {
 		NativeFunctionWrapper { func: Box::new(func), this }
 	}
 	
-	pub fn call(&mut self, vm: &mut VmArena, mut args: Vec<Value>) -> Result<Value, String> {
+	pub fn call(&self, vm: &mut VmArena, mut args: Vec<Value>) -> Result<Value, String> {
 		if let Some(this) = &self.this {
 			args.insert(0, this.clone());
 		}
@@ -179,7 +179,7 @@ pub enum Value {
 	Map(GcCell<HashMap<Value, Value>>),
 	Object(GcCell<HashMap<String, Value>>),
 	Function(GcRef<Function>),
-	NativeFunction(GcCell<NativeFunctionWrapper>),
+	NativeFunction(GcRef<NativeFunctionWrapper>),
 	Iterator(GcCell<IteratorWrapper>),
 }
 
@@ -214,7 +214,7 @@ macro_rules! get_prim {
 
 impl Value {
 	pub fn from_native_func(gc: &mut GcHeap, func: impl NativeFunction, this: Option<Value>) -> Self {
-		Value::NativeFunction(gc.add_cell(NativeFunctionWrapper::new(func, this)))
+		Value::NativeFunction(gc.add(NativeFunctionWrapper::new(func, this)))
 	}
 	
 	pub fn from_native_iter(gc: &mut GcHeap, iter: impl NativeIterator) -> Self {
