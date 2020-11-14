@@ -6,6 +6,7 @@ edition = "2018"
 
 [dependencies]
 cantan_derive = { path = "./cantan_derive" }
+fnv = "1.0.7"
 num-traits = "0.2.12"
 once_cell = "1.4.1"
 ordered-float = "2.0.0"

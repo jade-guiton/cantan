@@ -1,6 +1,7 @@
-use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::rc::Rc;
+
+use fnv::FnvHashMap;
 
 use crate::ast::*;
 use crate::chunk::*;
@@ -13,7 +14,7 @@ pub struct BlockContext {
 	breakable: bool,
 	breaks: Vec<usize>,
 	continues: Vec<usize>,
-	locals: HashMap<String, u16>,
+	locals: FnvHashMap<String, u16>,
 }
 
 #[derive(PartialEq)]
@@ -40,14 +41,14 @@ pub struct FunctionContext<'a> {
 
 pub struct InteractiveContext {
 	used_regs: IntSet<u16>,
-	locals: HashMap<String, u16>,
+	locals: FnvHashMap<String, u16>,
 }
 
 impl InteractiveContext {
 	pub fn new() -> Self {
 		InteractiveContext {
 			used_regs: IntSet::new(),
-			locals: HashMap::new(),
+			locals: FnvHashMap::default(),
 		}
 	}
 	
@@ -508,7 +509,7 @@ impl<'a> FunctionContext<'a> {
 			breakable: block_type == BlockType::Breakable,
 			breaks: vec![],
 			continues: vec![],
-			locals: HashMap::new()
+			locals: FnvHashMap::default()
 		});
 		
 		if block_type == BlockType::FunctionMain {
