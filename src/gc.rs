@@ -1,8 +1,10 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::fmt;
-use std::mem::size_of;
+use std::mem::size_of_val;
 use std::ops::Deref;
+
+use ordered_float::NotNan;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum TraceAction {
@@ -15,18 +17,22 @@ pub struct TraceCtx(TraceAction);
 // Safety: .trace(ctx) must call .trace(ctx) on all direct GcRef or Trace children.
 pub unsafe trait Trace: 'static {
 	// Safety: must only be called on objects in the GC heap.
-	unsafe fn trace(&self, _ctx: TraceCtx) {}
+	unsafe fn trace(&self, _ctx: TraceCtx);
 }
 
 // Safety: Marker trait for types with no accessible GcRefs
 pub unsafe trait Primitive: 'static {}
-unsafe impl<T: Primitive> Trace for T {}
+unsafe impl<T: Primitive> Trace for T {
+	unsafe fn trace(&self, _ctx: TraceCtx) {}
+}
 
 unsafe impl Primitive for () {}
 unsafe impl Primitive for bool {}
 unsafe impl Primitive for i32 {}
 unsafe impl Primitive for usize {}
 unsafe impl Primitive for String {}
+unsafe impl Primitive for NotNan<f64> {}
+unsafe impl Primitive for Box<str> {}
 unsafe impl<T: Primitive> Primitive for Cell<T> {}
 
 unsafe impl<T: Trace> Trace for Option<T> {
@@ -73,7 +79,8 @@ unsafe impl<T1: Trace, T2: Trace> Trace for HashMap<T1, GcRef<T2>> {
 	}
 }
 
-unsafe impl<T: Trace> Trace for RefCell<T> {
+
+unsafe impl<T: Trace + ?Sized> Trace for RefCell<T> {
 	unsafe fn trace(&self, ctx: TraceCtx) {
 		self.borrow().trace(ctx)
 	}
@@ -83,7 +90,7 @@ pub type GcCell<T> = GcRef<RefCell<T>>;
 
 
 #[repr(C)]
-pub(super) struct GcWrapper<T: Trace> {
+pub(super) struct GcWrapper<T: Trace + ?Sized> {
 	marked: Cell<bool>,
 	root_cnt: Cell<u8>,
 	data: T,
@@ -99,11 +106,13 @@ impl<T: Trace> GcWrapper<T> {
 	}
 }
 
-impl<T: Trace> Deref for GcWrapper<T> {
+impl<T: Trace + ?Sized> Deref for GcWrapper<T> {
 	type Target = T;
 	fn deref(&self) -> &T { &self.data }
 }
 
+impl<T, U> std::ops::CoerceUnsized<GcWrapper<U>> for GcWrapper<T>
+	where T: std::ops::CoerceUnsized<U> + Trace, U: Trace {}
 
 trait GcWrapped {
 	fn root(&self);
@@ -117,7 +126,7 @@ trait GcWrapped {
 	fn size(&self) -> usize;
 }
 
-impl<T: Trace> GcWrapped for GcWrapper<T> {
+impl<T: Trace + ?Sized> GcWrapped for GcWrapper<T> {
 	fn root(&self) {
 		self.root_cnt.set(self.root_cnt.get() + 1);
 	}
@@ -142,17 +151,17 @@ impl<T: Trace> GcWrapped for GcWrapper<T> {
 	fn is_marked(&self) -> bool { self.marked.get() }
 	
 	fn size(&self) -> usize {
-		size_of::<Self>()
+		size_of_val(self)
 	}
 }
 
 
-pub struct GcRef<T: Trace> {
+pub struct GcRef<T: Trace + ?Sized> {
 	is_root: Cell<bool>,
 	wrapper: *const GcWrapper<T>
 }
 
-impl<T: Trace> GcRef<T> {
+impl<T: Trace + ?Sized> GcRef<T> {
 	fn new(wrapper: &GcWrapper<T>) -> Self {
 		(*wrapper).root();
 		GcRef {
@@ -161,7 +170,7 @@ impl<T: Trace> GcRef<T> {
 		}
 	}
 	
-	pub fn get_addr(&self) -> usize { self.wrapper as usize }
+	pub fn get_addr(&self) -> usize { self.wrapper as *const () as usize }
 	
 	// Safety: as long as the GC algorithm is correct, self.wrapper cannot be invalid,
 	// except in the middle of the sweep step of GC, where this function must not be called.
@@ -184,19 +193,19 @@ impl<T: Trace> GcRef<T> {
 	}
 }
 
-impl<T: Trace> Clone for GcRef<T> {
+impl<T: Trace + ?Sized> Clone for GcRef<T> {
 	fn clone(&self) -> Self {
 		GcRef::new(self.wrapper())
 	}
 }
 
-impl<T: Trace> Drop for GcRef<T> {
+impl<T: Trace + ?Sized> Drop for GcRef<T> {
 	fn drop(&mut self) {
 		unsafe { self.unroot(); }
 	}
 }
 
-impl<T: Trace> Deref for GcRef<T> {
+impl<T: Trace + ?Sized> Deref for GcRef<T> {
 	type Target = T;
 	
 	fn deref(&self) -> &T {
@@ -211,6 +220,9 @@ impl<T: Trace + fmt::Debug> fmt::Debug for GcRef<T> {
 		write!(fmt, ")")
 	}
 }
+
+impl<T, U> std::ops::CoerceUnsized<GcRef<U>> for GcRef<T>
+	where T: std::marker::Unsize<U> + ?Sized + Trace, U: ?Sized + Trace {}
 
 
 const INIT_THRESHOLD: usize = 64;

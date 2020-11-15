@@ -7,8 +7,8 @@ use std::ops::Deref;
 use once_cell::sync::Lazy;
 use unicode_segmentation::GraphemeCursor;
 
-use crate::value::{expected, expected_type, NativeIterator, Type, Value};
-use crate::gc::{Trace, Primitive, GcHeap};
+use crate::value::{expected, NativeIterator, Callable, Type, Value};
+use crate::gc::{Trace, Primitive, GcCell, GcHeap};
 use crate::vm::VmArena;
 
 // To avoid writing the same type signature every time
@@ -105,20 +105,9 @@ native_func!(seq_map, vm, args, {
 	let seq = args[0].get_sequence()?;
 
 	let mut mapped = vec![];
-	match &args[1] {
-		Value::Function(func) => {
-			for x in seq.deref() {
-				let y = vm.call_function(func.clone(), vec![x.clone()])?;
-				mapped.push(y);
-			}
-		},
-		Value::NativeFunction(func) => {
-			for x in seq.deref() {
-				let y = func.call(vm, vec![x.clone()])?;
-				mapped.push(y);
-			}
-		},
-		_ => return expected_type(Type::Function, &args[1]),
+	let callable = args[1].get_callable()?;
+	for x in seq.deref() {
+		mapped.push(callable.call(vm, vec![x.clone()])?);
 	}
 	
 	match &args[0] {
@@ -173,15 +162,15 @@ native_func!(list_to_tuple, vm, args, {
 	Ok(Value::Tuple(vm.gc.add(list.deref().clone())))
 });
 
-#[derive(Trace)]
 struct IntIterator {
 	next: Cell<i32>,
 	until: i32,
 	step: i32,
 }
+unsafe impl Primitive for IntIterator {}
 
 impl NativeIterator for IntIterator {
-	fn next(&mut self, _gc: &mut GcHeap) -> Result<Option<Value>, String> {
+	fn next(&mut self, _vm: &mut VmArena) -> Result<Option<Value>, String> {
 		let next = self.next.get();
 		if next < self.until {
 			self.next.set(next + self.step);
@@ -242,7 +231,7 @@ impl CharIterator {
 }
 
 impl NativeIterator for CharIterator {
-	fn next(&mut self, _gc: &mut GcHeap) -> Result<Option<Value>, String> {
+	fn next(&mut self, _vm: &mut VmArena) -> Result<Option<Value>, String> {
 		let next = self.cursor.next_boundary(&self.string, 0)
 			.map_err(|_| String::from("Error during iteration over string"))?;
 		match next {
@@ -276,7 +265,7 @@ native_func!(iter_join, vm, args, {
 	
 	let mut buf = String::new();
 	let mut first = true;
-	while let Some(val) = iter.iter.next(&mut vm.gc)? {
+	while let Some(val) = iter.next(vm)? {
 		if first {
 			first = false;
 		} else if let Some(ref sep) = sep {
@@ -294,7 +283,7 @@ native_func!(iter_to_list, vm, args, {
 	let mut iter = iter.borrow_mut();
 	
 	let mut values = vec![];
-	while let Some(val) = iter.iter.next(&mut vm.gc)? {
+	while let Some(val) = iter.next(vm)? {
 		values.push(val);
 	}
 	
@@ -306,7 +295,7 @@ native_func!(iter_to_tuple, vm, args, {
 	let mut iter = iter.borrow_mut();
 	
 	let mut values = vec![];
-	while let Some(val) = iter.iter.next(&mut vm.gc)? {
+	while let Some(val) = iter.next(vm)? {
 		values.push(val);
 	}
 	
@@ -318,11 +307,36 @@ native_func!(iter_next, vm, args, {
 	let iter = args[0].get_iter()?;
 	let mut iter = iter.borrow_mut();
 	
-	let res = match iter.iter.next(&mut vm.gc)? {
+	let res = match iter.next(vm)? {
 		Some(val) => vec![Value::Bool(true), val],
 		None => vec![Value::Bool(false)],
 	};
 	Ok(Value::Tuple(vm.gc.add(res)))
+});
+
+#[derive(Trace)]
+struct MapIterator {
+	before: GcCell<dyn NativeIterator>,
+	func: Callable,
+}
+
+impl NativeIterator for MapIterator {
+	fn next(&mut self, vm: &mut VmArena) -> Result<Option<Value>, String> {
+		match self.before.borrow_mut().next(vm)? {
+			Some(x) => Ok(Some(self.func.call(vm, vec![x])?)),
+			None => Ok(None),
+		}
+	}
+}
+
+native_func!(iter_map, vm, args, {
+	check_arg_cnt(1, args.len() - 1)?;
+	let before = args[0].get_iter()?;
+	let func = args[1].get_callable()?;
+	
+	Ok(Value::Iterator(vm.gc.add_cell(MapIterator {
+		before, func,
+	})))
 });
 
 
@@ -365,6 +379,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("to_list", iter_to_list),
 		("to_tuple", iter_to_tuple),
 		("next", iter_next),
+		("map", iter_map),
 	])
 ].iter().map(|(t,p)| (*t, p.iter().map(|(s,f)| (s.to_string(), *f)).collect())).collect());
 

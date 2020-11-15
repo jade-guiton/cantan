@@ -18,32 +18,35 @@ struct FunctionCall {
 }
 
 #[derive(Trace)]
-struct NativeCall {
+struct NativeCallParams {
 	func: GcRef<NativeFunctionWrapper>,
 	args: Vec<Value>,
 }
 
 #[derive(Trace)]
+enum NativeCall {
+	NativeFunction(NativeCallParams),
+	Iterator(GcCell<dyn NativeIterator>),
+}
+
+#[derive(Trace)]
 enum Call {
 	Function(FunctionCall),
-	Native(NativeCall),
+	Native,
 }
 
 impl Call {
 	fn unwrap_function_call(&mut self) -> &mut FunctionCall {
 		match self {
 			Call::Function(call) => call,
-			Call::Native(_) => panic!("Expected non-native function call"),
+			_ => panic!("Expected non-native function call"),
 		}
 	}
-	fn get_native_call(&mut self) -> Option<&mut NativeCall> {
+	fn unwrap_native_call(&mut self) {
 		match self {
-			Call::Native(call) => Some(call),
-			Call::Function(_) => None,
+			Call::Native => (),
+			_ => panic!("Expected native function call"),
 		}
-	}
-	fn unwrap_native_call(&mut self) -> &mut NativeCall {
-		self.get_native_call().expect("Expected native function call")
 	}
 }
 
@@ -190,14 +193,11 @@ impl VmState {
 		Ok(())
 	}
 
-	fn call_native(&mut self, func: GcRef<NativeFunctionWrapper>, args: Vec<Value>) {
+	fn call_native(&mut self) {
 		if let Some(Call::Function(call)) = self.calls.last_mut() {
 			call.return_idx = Some(self.idx + 1);
 		}
-		self.calls.push(Call::Native(NativeCall {
-			func,
-			args,
-		}));
+		self.calls.push(Call::Native);
 	}
 	
 	// Runs function at top level in "interactive mode"
@@ -215,16 +215,6 @@ impl VmState {
 		}));
 		
 		self.idx = 0;
-	}
-
-	fn get_native_call(&mut self) -> Option<NativeCall> {
-		self.calls.last_mut().unwrap().get_native_call()
-			.map(|call| {
-				NativeCall {
-					func: call.func.clone(),
-					args: call.args.drain(..).collect(),
-				}
-			})
 	}
 
 	fn unwrap_function_call(&mut self) -> &mut FunctionCall {
@@ -256,10 +246,13 @@ impl VmState {
 		self.reenter_last_call();
 	}
 
-	fn return_from_native(&mut self, res: Value) {
+	fn return_from_native(&mut self, values: Vec<Value>) {
 		self.calls.pop().unwrap().unwrap_native_call();
-		self.push(res);
-
+		
+		for x in values {
+			self.push(x);
+		}
+		
 		self.reenter_last_call();
 	}
 
@@ -281,7 +274,7 @@ impl VmState {
 	}
 	
 	// Warning: does not reset state on errors; callers should not reuse state after error
-	fn run_instr_unsafe(&mut self, gc: &mut GcHeap) -> Result<(), String> {
+	fn run_instr_unsafe(&mut self, gc: &mut GcHeap) -> Result<Option<NativeCall>, String> {
 		let func = self.unwrap_function_call().func.clone();
 		let instr = func.chunk.code.get(self.idx)
 			.ok_or_else(|| String::from("Jumped to invalid instruction"))?
@@ -379,8 +372,10 @@ impl VmState {
 						jumped = true;
 					},
 					Value::NativeFunction(func2) => {
-						self.call_native(func2, args);
-						jumped = true;
+						self.call_native();
+						return Ok(Some(NativeCall::NativeFunction(NativeCallParams {
+							func: func2, args,
+						})));
 					},
 					_ => {
 						return Err(format!("Cannot call non-function: {}", func2.repr()));
@@ -433,7 +428,7 @@ impl VmState {
 					BinaryOp::Plus if a.get_type() == Type::String => {
 						let a = a.get_string().unwrap();
 						let b = b.get_string()?;
-						self.push(Value::String(NiceStr((a + &b).into_boxed_str())));
+						self.push(Value::String((a + &b).into_boxed_str()));
 					},
 					BinaryOp::Plus if a.get_type() == Type::List => {
 						let a = a.get_list().unwrap();
@@ -511,7 +506,7 @@ impl VmState {
 					UnaryOp::Minus => {
 						res = match val {
 							Value::Int(i) => Value::Int(-i),
-							Value::Float(f) => Value::Float(NiceFloat(-f.0)),
+							Value::Float(f) => Value::Float(-f),
 							_ => return Err(format!("Cannot get opposite of: {}", val.repr())),
 						}
 					},
@@ -553,12 +548,9 @@ impl VmState {
 					self.set_reg(iter_reg, new_iter);
 					iter = self.get_reg(iter_reg)?;
 				}
-				if let Some(value) = iter.next(gc)? {
-					self.push(value);
-					self.push(Value::Bool(true));
-				} else {
-					self.push(Value::Bool(false));
-				}
+				let iter = iter.get_iter()?;
+				self.call_native();
+				return Ok(Some(NativeCall::Iterator(iter)));
 			},
 		}
 		
@@ -568,15 +560,15 @@ impl VmState {
 		
 		self.check_end();
 		
-		Ok(())
+		Ok(None)
 	}
 	
 	// Like run_instr_unsafe, but clears calls and the stack on errors
 	// Does not clear registers
 	// Using this, VmState can be reused in interactive mode even after error
-	fn run_instr(&mut self, gc: &mut GcHeap) -> Result<(), String> {
+	fn run_instr(&mut self, gc: &mut GcHeap) -> Result<Option<NativeCall>, String> {
 		match self.run_instr_unsafe(gc) {
-			Ok(()) => Ok(()),
+			Ok(x) => Ok(x),
 			Err(err) => {
 				self.calls.clear();
 				self.stack.clear();
@@ -605,14 +597,26 @@ impl VmArena {
 		if self.vm.borrow().check_stack_size(call_base) { return Ok(()); }
 		
 		loop {
-			self.vm.borrow_mut().run_instr(&mut self.gc)?;
+			let call = self.vm.borrow_mut().run_instr(&mut self.gc)?;
 			self.gc.step();
-
+			
 			if self.vm.borrow().check_stack_size(call_base) { break }
 			
-			let call = self.vm.borrow_mut().get_native_call();
 			if let Some(call) = call {
-				let res = call.func.call(self, call.args)?;
+				let mut res = vec![];
+				match call {
+					NativeCall::NativeFunction(params) => {
+						res.push(params.func.call(self, params.args)?);
+					},
+					NativeCall::Iterator(iter) => {
+						if let Some(value) = iter.borrow_mut().next(self)? {
+							res.push(value);
+							res.push(Value::Bool(true));
+						} else {
+							res.push(Value::Bool(false));
+						}
+					},
+				}
 				self.vm.borrow_mut().return_from_native(res);
 				self.gc.step();
 			}

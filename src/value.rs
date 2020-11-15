@@ -9,7 +9,7 @@ use std::rc::Rc;
 
 use ordered_float::NotNan;
 
-use crate::ast::Primitive;
+use crate::ast;
 use crate::chunk::CompiledFunction;
 use crate::gc::{Trace, TraceCtx, GcRef, GcCell, GcHeap};
 use crate::vm::VmArena;
@@ -31,40 +31,6 @@ impl Function {
 		Function { chunk, upvalues: vec![] }
 	}
 }
-
-// New type to implement Trace
-#[derive(Clone, Debug)]
-#[repr(transparent)]
-pub struct NiceFloat(pub NotNan<f64>);
-
-impl Deref for NiceFloat {
-	type Target = f64;
-	fn deref(&self) -> &f64 {
-		self.0.deref()
-	}
-}
-
-unsafe impl Trace for NiceFloat {}
-
-// New type to implement Trace
-#[derive(Clone, Debug)]
-#[repr(transparent)]
-pub struct NiceStr(pub Box<str>);
-
-impl From<String> for NiceStr {
-	fn from(s: String) -> Self {
-		NiceStr(s.into_boxed_str())
-	}
-}
-
-impl Deref for NiceStr {
-	type Target = str;
-	fn deref(&self) -> &str {
-		self.0.deref()
-	}
-}
-
-unsafe impl Trace for NiceStr {}
 
 pub trait NativeFunction = for<'gc, 'ctx> Fn(&mut VmArena, Vec<Value>) -> Result<Value, String> + 'static;
 
@@ -104,7 +70,7 @@ unsafe impl Trace for NativeFunctionWrapper {
 }
 
 pub trait NativeIterator: Trace {
-	fn next(&mut self, gc: &mut GcHeap) -> Result<Option<Value>, String>;
+	fn next(&mut self, vm: &mut VmArena) -> Result<Option<Value>, String>;
 }
 
 #[derive(Trace)]
@@ -123,30 +89,13 @@ impl ListIterator {
 }
 
 impl NativeIterator for ListIterator {
-	fn next(&mut self, _gc: &mut GcHeap) -> Result<Option<Value>, String> {
+	fn next(&mut self, _vm: &mut VmArena) -> Result<Option<Value>, String> {
 		if let Some(val) = self.list.get(self.idx.get()).cloned() {
 			self.idx.set(self.idx.get() + 1);
 			Ok(Some(val))
 		} else {
 			Ok(None)
 		}
-	}
-}
-
-#[derive(Trace)]
-pub struct IteratorWrapper {
-	pub iter: Box<dyn NativeIterator>,
-}
-
-impl IteratorWrapper {
-	fn new(iter: impl NativeIterator) -> Self {
-		IteratorWrapper { iter: Box::new(iter) }
-	}
-}
-
-impl fmt::Debug for IteratorWrapper {
-	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
-		write!(fmt, "NativeIteratorWrapper @ 0x{:x}", self.iter.as_ref() as *const _ as *const () as usize)
 	}
 }
 
@@ -165,14 +114,29 @@ impl<'seq> Deref for ImmutSequence<'seq> {
 	}
 }
 
+#[derive(Trace)]
+pub enum Callable {
+	Function(GcRef<Function>),
+	Native(GcRef<NativeFunctionWrapper>),
+}
+
+impl Callable {
+	pub fn call(&self, vm: &mut VmArena, args: Vec<Value>) -> Result<Value, String> {
+		match self {
+			Callable::Function(func) => vm.call_function(func.clone(), args),
+			Callable::Native(func) => func.call(vm, args),
+		}
+	}
+}
+
 #[derive(Clone, Trace)]
 pub enum Value {
 	// Unpacked Primitive
 	Nil,
 	Bool(bool),
 	Int(i32),
-	Float(NiceFloat),
-	String(NiceStr),
+	Float(NotNan<f64>),
+	String(Box<str>),
 	
 	Tuple(GcRef<Vec<Value>>),
 	List(GcCell<Vec<Value>>),
@@ -180,7 +144,7 @@ pub enum Value {
 	Object(GcCell<HashMap<String, Value>>),
 	Function(GcRef<Function>),
 	NativeFunction(GcRef<NativeFunctionWrapper>),
-	Iterator(GcCell<IteratorWrapper>),
+	Iterator(GcCell<dyn NativeIterator>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -218,7 +182,7 @@ impl Value {
 	}
 	
 	pub fn from_native_iter(gc: &mut GcHeap, iter: impl NativeIterator) -> Self {
-		Value::Iterator(gc.add_cell(IteratorWrapper::new(iter)))
+		Value::Iterator(gc.add_cell(iter))
 	}
 	
 	pub fn get_type(&self) -> Type {
@@ -243,7 +207,7 @@ impl Value {
 	get_prim!(get_int, i32, Int);
 	get_prim!(get_list, GcCell<Vec<Value>>, List);
 	get_prim!(get_tuple, GcRef<Vec<Value>>, Tuple);
-	get_prim!(get_iter, GcCell<IteratorWrapper>, Iterator);
+	get_prim!(get_iter, GcCell<dyn NativeIterator>, Iterator);
 	
 	pub fn get_sequence<'a>(&'a self) -> Result<ImmutSequence<'a>, String> {
 		match self {
@@ -255,7 +219,7 @@ impl Value {
 	
 	pub fn get_string(&self) -> Result<String, String> {
 		if let Value::String(s) = self {
-			Ok(s.0.to_string())
+			Ok(s.to_string())
 		} else {
 			expected_type(Type::String, self)
 		}
@@ -271,13 +235,21 @@ impl Value {
 		}
 	}
 	
+	pub fn get_callable(&self) -> Result<Callable, String> {
+		match self {
+			Value::Function(f) => Ok(Callable::Function(f.clone())),
+			Value::NativeFunction(f) => Ok(Callable::Native(f.clone())),
+			_ => expected_type(Type::Function, self),
+		}
+	}
+	
 	pub fn struct_eq(&self, other: &Value) -> bool {
 		match (self, other) {
 			(Value::Nil, Value::Nil) => true,
 			(Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
 			(Value::Int(i1), Value::Int(i2)) => i1 == i2,
-			(Value::Float(f1), Value::Float(f2)) => f1.0 == f2.0,
-			(Value::String(s1), Value::String(s2)) => s1.0 == s2.0,
+			(Value::Float(f1), Value::Float(f2)) => f1 == f2,
+			(Value::String(s1), Value::String(s2)) => s1 == s2,
 			
 			(Value::Tuple(t1), Value::Tuple(t2)) =>
 				if t1.len() == t2.len() {
@@ -310,11 +282,11 @@ impl Value {
 			(Value::Int(i1), Value::Int(i2)) =>
 				Ok(i1.cmp(i2)),
 			(Value::Int(i1), Value::Float(f2)) =>
-				Ok(NotNan::new(*i1 as f64).unwrap().cmp(&f2.0)),
+				Ok(NotNan::new(*i1 as f64).unwrap().cmp(&f2)),
 			(Value::Float(f1), Value::Int(i2)) =>
-				Ok(f1.0.cmp(&NotNan::new(*i2 as f64).unwrap())),
+				Ok(f1.cmp(&NotNan::new(*i2 as f64).unwrap())),
 			(Value::Float(f1), Value::Float(f2)) =>
-				Ok(f1.0.cmp(&f2.0)),
+				Ok(f1.cmp(&f2)),
 			(Value::String(s1), Value::String(s2)) =>
 				Ok(s1.cmp(s2)),
 			
@@ -345,8 +317,8 @@ impl Value {
 			Value::Nil => String::from("nil"),
 			Value::Bool(b) => format!("{:?}", b),
 			Value::Int(i) => format!("{}", i),
-			Value::Float(f) => format!("{}", f.0),
-			Value::String(s) => format!("{:?}", s.0),
+			Value::Float(f) => format!("{}", f),
+			Value::String(s) => format!("{:?}", s),
 			
 			Value::Tuple(list) => {
 				let mut buf = String::new();
@@ -488,17 +460,11 @@ impl Value {
 			Value::List(list) => {
 				Ok(Some(Value::from_native_iter(gc, ListIterator::new(list.borrow().clone()))))
 			},
+			Value::Tuple(tuple) => {
+				Ok(Some(Value::from_native_iter(gc, ListIterator::new(tuple.deref().clone()))))
+			},
 			Value::Iterator(_) => Ok(None),
 			_ => Err(format!("Cannot iterate: {}", self.repr())),
-		}
-	}
-	
-	pub fn next(&self, gc: &mut GcHeap) -> Result<Option<Value>, String> {
-		match self {
-			Value::Iterator(iter) => {
-				iter.borrow_mut().iter.next(gc)
-			},
-			_ => Err(format!("{} is not an iterator", self.repr())),
 		}
 	}
 }
@@ -512,8 +478,8 @@ impl PartialEq for Value {
 			(Value::Nil, Value::Nil) => true,
 			(Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
 			(Value::Int(i1), Value::Int(i2)) => i1 == i2,
-			(Value::Float(f1), Value::Float(f2)) => f1.0 == f2.0,
-			(Value::String(s1), Value::String(s2)) => s1.0 == s2.0,
+			(Value::Float(f1), Value::Float(f2)) => f1 == f2,
+			(Value::String(s1), Value::String(s2)) => s1 == s2,
 			
 			(Value::Tuple(t1), Value::Tuple(t2)) => **t1 == **t2,
 			(Value::List(l1), Value::List(l2)) => l1.get_addr() == l2.get_addr(),
@@ -535,8 +501,8 @@ impl Hash for Value {
 			Value::Nil => {},
 			Value::Bool(b) => b.hash(state),
 			Value::Int(i) => i.hash(state),
-			Value::Float(f) => f.0.hash(state),
-			Value::String(s) => s.0.hash(state),
+			Value::Float(f) => f.hash(state),
+			Value::String(s) => s.hash(state),
 			
 			Value::Tuple(values) => values.hash(state),
 			Value::List(list) => list.get_addr().hash(state),
@@ -549,21 +515,21 @@ impl Hash for Value {
 	}
 }
 
-impl From<&Primitive> for Value {
-	fn from(cst: &Primitive) -> Self {
+impl From<&ast::Primitive> for Value {
+	fn from(cst: &ast::Primitive) -> Self {
 		match cst {
-			Primitive::Nil => Value::Nil,
-			Primitive::Bool(b) => Value::Bool(*b),
-			Primitive::Int(i) => Value::Int(*i),
-			Primitive::Float(f) => Value::Float(NiceFloat(*f)),
-			Primitive::String(s) => Value::String(NiceStr(s.clone())),
+			ast::Primitive::Nil => Value::Nil,
+			ast::Primitive::Bool(b) => Value::Bool(*b),
+			ast::Primitive::Int(i) => Value::Int(*i),
+			ast::Primitive::Float(f) => Value::Float(*f),
+			ast::Primitive::String(s) => Value::String(s.clone()),
 		}
 	}
 }
 
 impl From<String> for Value {
 	fn from(s: String) -> Self {
-		Value::String(NiceStr::from(s))
+		Value::String(s.into_boxed_str())
 	}
 }
 
@@ -571,7 +537,7 @@ impl TryFrom<f64> for Value {
 	type Error = String;
 	fn try_from(f: f64) -> Result<Self, String> {
 		if f.is_finite() {
-			Ok(Value::Float(NiceFloat(NotNan::new(f).unwrap())))
+			Ok(Value::Float(NotNan::new(f).unwrap()))
 		} else {
 			Err(String::from("Float operation had Infinite or NaN result"))
 		}

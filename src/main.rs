@@ -1,4 +1,6 @@
 #![feature(trait_alias)]
+#![feature(unsize)]
+#![feature(coerce_unsized)]
 
 #[macro_use]
 extern crate cantan_derive;

@@ -6,7 +6,7 @@ use fnv::FnvHashMap;
 use crate::ast::*;
 use crate::chunk::*;
 use crate::util::IntSet;
-use crate::value::{NiceStr, Value};
+use crate::value::Value;
 
 
 #[derive(Clone)]
@@ -223,7 +223,7 @@ impl<'a> FunctionContext<'a> {
 						} else if let Some(upv) = self.find_upvalue(&id)? {
 							self.func.code.push(Instr::LoadUpv(upv));
 						} else if crate::stdlib::GLOBAL_NAMES.contains(&id) {
-							let idx = self.add_prim_cst(Value::String(NiceStr::from(id)))?;
+							let idx = self.add_prim_cst(Value::String(id.into_boxed_str()))?;
 							self.func.code.push(Instr::LoadGlobal(idx));
 						} else {
 							return Err(format!("Referencing undefined value '{}'", id));
@@ -237,7 +237,7 @@ impl<'a> FunctionContext<'a> {
 					},
 					LExpr::Prop(obj, prop) => {
 						self.compile_expression(*obj)?;
-						let cst_idx = self.add_prim_cst(Value::String(NiceStr::from(prop)))?;
+						let cst_idx = self.add_prim_cst(Value::String(prop.into_boxed_str()))?;
 						self.func.code.push(Instr::Prop(cst_idx));
 						self.stack_size -= 1;
 					},
@@ -342,7 +342,7 @@ impl<'a> FunctionContext<'a> {
 					},
 					LExpr::Prop(obj, prop) => {
 						self.compile_expression(*obj)?;
-						let cst_idx = self.add_prim_cst(Value::String(NiceStr::from(prop)))?;
+						let cst_idx = self.add_prim_cst(Value::String(prop.into_boxed_str()))?;
 						self.compile_expression(expr)?;
 						self.func.code.push(Instr::SetProp(cst_idx));
 						self.stack_size -= 2;
