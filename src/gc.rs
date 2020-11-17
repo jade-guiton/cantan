@@ -254,10 +254,14 @@ impl GcHeap {
 		self.add(RefCell::new(v))
 	}
 	
-	pub fn collect(&mut self) {
+	pub fn weed_roots(&mut self) {
 		for wrapper in self.objects.iter() {
 			wrapper.unroot_children();
 		}
+	}
+	
+	pub fn collect(&mut self) {
+		self.weed_roots();
 
 		for wrapper in self.objects.iter() {
 			if wrapper.is_rooted() {
@@ -274,7 +278,18 @@ impl GcHeap {
 		}
 	}
 	
+	fn has_very_rooted(&self) -> bool {
+		self.objects.iter().any(|wrapper| wrapper.root_cnt() >= 128)
+	}
+	
 	pub fn step(&mut self) {
+		if self.has_very_rooted() {
+			self.weed_roots();
+			if self.has_very_rooted() {
+				panic!("GC object is rooted 128 times or more; this is not supposed to happen");
+			}
+		}
+		
 		if self.used >= self.threshold {
 			self.collect();
 			self.threshold = self.used * 2;

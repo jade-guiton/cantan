@@ -50,6 +50,8 @@ impl Call {
 	}
 }
 
+const CALL_STACK_LIMIT: usize = 1000;
+
 #[derive(Trace)]
 pub struct VmState {
 	globals: HashMap<String, Value>,
@@ -170,6 +172,10 @@ impl VmState {
 		let chunk = &func.chunk;
 		if args.len() != chunk.arg_cnt as usize {
 			return Err(format!("Expected {} arguments, got {}", chunk.arg_cnt, args.len()));
+		}
+		
+		if self.calls.len() >= CALL_STACK_LIMIT {
+			return Err(format!("Call stack limit exceeded; infinite recursion is likely"));
 		}
 
 		if let Some(Call::Function(call)) = self.calls.last_mut() {
