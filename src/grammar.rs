@@ -41,7 +41,7 @@ peg::parser! {
 		pub rule program() -> Block = _ b:block() _ { b }
 		rule block() -> Block = s:(statement() ** statement_sep()) { s }
 		rule statement_sep() = ___ ("\n" / ";") _
-		pub rule lone_statement() -> Statement = _ s:statement() _ { s }
+		pub rule lone_statement() -> Statement = _ s:(s:statement() {s} / e:expr() {Statement::ExprStat(e)}) _ { s }
 		rule statement() -> Statement
 			= "let" wb() _ p:pattern() _ e:val_or_fn() { Statement::Let(p, e) }
 			/ "if" _ c:pexpr() _ t:block() _ ei:else_if()* e:else_()? "end" wb() { Statement::If(c,t,ei,e) }
