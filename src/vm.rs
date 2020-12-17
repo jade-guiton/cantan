@@ -569,7 +569,7 @@ impl VmState {
 				let val = self.pop()?;
 				let idx = self.pop()?;
 				let coll = self.pop()?;
-				coll.set_index(&idx, val)?;
+				coll.set_index(idx, val)?;
 			},
 			Instr::Prop(cst_idx) => {
 				let obj = self.pop()?;

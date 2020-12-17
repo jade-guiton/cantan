@@ -447,7 +447,7 @@ impl Value {
 		}
 	}
 	
-	pub fn set_index(&self, idx: &Value, val: Value) -> Result<(), String> {
+	pub fn set_index(&self, idx: Value, val: Value) -> Result<(), String> {
 		match self {
 			Value::List(list) => {
 				let mut list = list.borrow_mut();
@@ -459,8 +459,7 @@ impl Value {
 			},
 			Value::Map(map) => {
 				let mut map = map.borrow_mut();
-				let slot = map.get_mut(idx).ok_or_else(|| format!("Map does not contain key: {}", idx.repr()))?;
-				*slot = val;
+				map.insert(idx, val);
 			},
 			_ => return Err(format!("Cannot set index in {:?}", self.get_type())),
 		}
@@ -534,7 +533,6 @@ impl PartialEq for Value {
 }
 impl Eq for Value {}
 
-// Reminder: 
 impl Hash for Value {
 	fn hash<H: Hasher>(&self, state: &mut H) {
 		self.get_type().hash(state);
