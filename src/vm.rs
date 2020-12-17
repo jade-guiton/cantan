@@ -213,6 +213,7 @@ impl VmState {
 	fn call_interactive(&mut self, gc: &mut GcHeap, func: Rc<CompiledFunction>) {
 		assert!(self.calls.is_empty());
 		
+		self.reg_base = 0;
 		self.calls.push(Call::Function(FunctionCall {
 			func: gc.add(Function::main(func)),
 			interactive: true,
