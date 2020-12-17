@@ -108,13 +108,13 @@ peg::parser! {
 			o:@ _ "." i:id() { Expr::LExpr(LExpr::Prop(Box::new(o), i)) }
 			f:@ ___ "(" _ a:(expr() ** (_ "," _)) _ ("," _)? ")" { Expr::Call(Box::new(f), a) }
 			--
+			e:pexpr() { e }
 			f:(quiet!{"fn" wb() _ f:fn_def() {f}} / expected!("function")) { f }
-			e:(quiet!{"[" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" {e}} / expected!("tuple")) { Expr::Tuple(e) }
-			e:(quiet!{"[|" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" {e}} / expected!("list")) { Expr::List(e) }
+			e:(quiet!{"(" _ e:(expr() ** (_ "," _)) _ ("," _)? ")" {e}} / expected!("tuple")) { Expr::Tuple(e) }
+			e:(quiet!{"[" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" {e}} / expected!("list")) { Expr::List(e) }
 			(quiet!{"[" _ "=" _ "]"} / expected!("map")) { Expr::Map(vec![]) } // Empty map [=]
 			e:(quiet!{"[" _ e:(map_item() ** (_ "," _)) _ ("," _)? "]" {e}} / expected!("map")) { Expr::Map(e) }
 			i:(quiet!{"{" _ i:(object_item() ** (_ "," _)) _ ("," _)? "}" {i}} / expected!("object")) { Expr::Object(i) }
-			e:pexpr() { e }
 			b:boolean() wb() { Expr::Primitive(Primitive::Bool(b)) }
 			"nil" wb() { Expr::Primitive(Primitive::Nil) }
 			s:string() { Expr::Primitive(Primitive::String(s.into_boxed_str())) }

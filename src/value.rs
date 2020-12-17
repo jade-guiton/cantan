@@ -322,20 +322,23 @@ impl Value {
 			
 			Value::Tuple(list) => {
 				let mut buf = String::new();
-				write!(buf, "[").unwrap();
+				write!(buf, "(").unwrap();
 				for (idx, val) in list.iter().enumerate() {
 					write!(buf, "{}", val.repr()).unwrap();
 					if idx < list.len() - 1 {
 						write!(buf, ", ").unwrap();
 					}
 				}
-				write!(buf, "]").unwrap();
+				if list.len() == 1 {
+					write!(buf, ",").unwrap();
+				}
+				write!(buf, ")").unwrap();
 				buf
 			},
 			Value::List(list) => {
 				let list = list.borrow();
 				let mut buf = String::new();
-				write!(buf, "[|").unwrap();
+				write!(buf, "[").unwrap();
 				for (idx, val) in list.iter().enumerate() {
 					write!(buf, "{}", val.repr()).unwrap();
 					if idx < list.len() - 1 {
