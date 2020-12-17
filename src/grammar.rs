@@ -52,7 +52,7 @@ peg::parser! {
 			/ "break" _ c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
 			/ "continue" _ c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }
 			/ "return" wb() _ e:expr()? { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
-			/ l:lexpr() _ op:assign_op() _ e:expr() {
+			/ l:lexpr() ___ op:assign_op() _ e:expr() {
 				if let Some(op) = op {
 					Statement::Set(l.clone(), Expr::Binary(op, Box::new(Expr::LExpr(l)), Box::new(e)))
 				} else {
@@ -179,9 +179,10 @@ peg::parser! {
 			= quiet!{ "\"" c:string_char()* "\"" { c.into_iter().collect() } } / expected!("string")
 		
 		#[cache]
-		rule _() = quiet!{[' '|'\t'|'\n']*}
-		rule __() = quiet!{[' '|'\t'|'\n']+}
+		rule _() = quiet!{([' '|'\t'|'\n']*)**comment()}
+		rule __() = quiet!{[' '|'\t'|'\n'] ([' '|'\t'|'\n']*)**comment()}
 		rule ___() = quiet!{[' '|'\t']*}
+		rule comment() = quiet!{"#" (!['\n'][_])* ['\n']}
 		rule XIDStart() = quiet!{ c:$([_]) {?
 			if get_char(c).is_xid_start() { Ok(()) } else { Err("") }} }
 		rule XIDContinue() = quiet!{ c:$([_]) {?
