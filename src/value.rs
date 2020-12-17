@@ -152,6 +152,24 @@ pub enum Type {
 	Int, Float, String, Bool, Nil, Tuple, List, Map, Object, Function, Iterator,
 }
 
+impl Type {
+	pub fn get_string(&self) -> &'static str {
+		match self {
+			Type::Int => "int",
+			Type::Float => "float",
+			Type::String => "str",
+			Type::Bool => "bool",
+			Type::Nil => "nil",
+			Type::Tuple => "tuple",
+			Type::List => "list",
+			Type::Map => "map",
+			Type::Object => "obj",
+			Type::Function => "fun",
+			Type::Iterator => "iter",
+		}
+	}
+}
+
 pub fn expected<T>(exp: &str, got: &str) -> Result<T, String> {
 	Err(format!("Expected {}, got {}", exp, got))
 }

@@ -212,6 +212,11 @@ native_func!(range, vm, args, {
 	}))
 });
 
+native_func!(type_, args, {
+	check_arg_cnt(1, args.len())?;
+	Ok(Value::String(args[0].get_type().get_string().to_string().into_boxed_str()))
+});
+
 struct CharIterator {
 	string: String,
 	offset: usize,
@@ -348,6 +353,7 @@ pub static FUNCTIONS: Lazy<HashMap<String, NativeFn>> = Lazy::new(|| [
 	("repr", repr),
 	("xrange", xrange),
 	("range", range),
+	("type", type_),
 ].iter().map(|(s,f)| (s.to_string(), *f)).collect());
 
 pub static GLOBAL_NAMES: Lazy<HashSet<String>> = Lazy::new(||
