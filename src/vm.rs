@@ -449,16 +449,24 @@ impl VmState {
 						let a = a.get_int().unwrap();
 						let b = b.get_int().unwrap();
 						let c = match op {
-							BinaryOp::Plus => a.checked_add(b).ok_or_else(|| String::from("Integer overflow"))?,
-							BinaryOp::Minus => a.checked_sub(b).ok_or_else(|| String::from("Integer overflow"))?,
-							BinaryOp::Times => a.checked_mul(b).ok_or_else(|| String::from("Integer overflow"))?,
-							BinaryOp::Modulo => a.checked_rem_euclid(b).ok_or_else(|| String::from("Division by zero"))?,
+							BinaryOp::Plus => a.checked_add(b),
+							BinaryOp::Minus => a.checked_sub(b),
+							BinaryOp::Times => a.checked_mul(b),
+							BinaryOp::Modulo => a.checked_rem_euclid(b).map(Some).ok_or_else(|| String::from("Division by zero"))?,
 							_ => unreachable!(),
 						};
-						self.push(Value::Int(c));
+						let c = c.map(|i| Ok(Value::Int(i))).unwrap_or_else(|| {
+							match op {
+								BinaryOp::Plus => Value::try_from((a as f64) + (b as f64)),
+								BinaryOp::Minus => Value::try_from((a as f64) - (b as f64)),
+								BinaryOp::Times => Value::try_from((a as f64) * (b as f64)),
+								_ => unreachable!(),
+							}
+						})?;
+						self.push(c);
 					},
 					BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Times | BinaryOp::Divides
-					| BinaryOp::IntDivides | BinaryOp::Modulo | BinaryOp::Power => {
+					| BinaryOp::IntDivides | BinaryOp::Modulo => {
 						let a = a.get_numeric().map_err(|err|
 							if op == BinaryOp::Plus { expected_types::<()>("Int, Float, or String", &a).unwrap_err() } else { err })?;
 						let b = b.get_numeric()?;
@@ -467,6 +475,9 @@ impl VmState {
 							BinaryOp::Minus => Value::try_from(a - b)?,
 							BinaryOp::Times => Value::try_from(a * b)?,
 							BinaryOp::Divides => {
+								if b == 0.0 {
+									return Err(String::from("Division by zero is undefined"));
+								}
 								let c = a / b;
 								Value::try_from(c)?
 							},
@@ -476,15 +487,37 @@ impl VmState {
 								}
 								let c = a.div_euclid(b);
 								if c < (i32::MIN as f64) || c > (i32::MAX as f64) {
-									return Err(String::from("Result of division does not fit in integer"));
+									Value::try_from(c)?
+								} else {
+									Value::Int(c as i32)
 								}
-								Value::Int(c as i32)
 							},
 							BinaryOp::Modulo => Value::try_from(a.rem_euclid(b))?,
-							BinaryOp::Power => Value::try_from(a.powf(b))?,
 							_ => unreachable!(),
 						};
 						self.push(c);
+					},
+					BinaryOp::Power => {
+						let mut int_res = None;
+						if a.get_type() == Type::Int && b.get_type() == Type::Int {
+							let b = b.get_int().unwrap();
+							if b >= 0 {
+								let a =  a.get_int().unwrap();
+								if !(a == 0 && b == 0) {
+									int_res = a.checked_pow(b as u32);
+								}
+							}
+						}
+						if let Some(int_res) = int_res {
+							self.push(Value::Int(int_res));
+						} else {
+							let a = a.get_numeric()?;
+							let b = b.get_numeric()?;
+							if a == 0.0 && b == 0.0 {
+								return Err(String::from("0^0 is undefined"));
+							}
+							self.push(Value::try_from(a.powf(b))?);
+						}
 					},
 					BinaryOp::Eq => {
 						self.push(Value::Bool(a.struct_eq(&b)));

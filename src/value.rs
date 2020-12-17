@@ -248,6 +248,10 @@ impl Value {
 			(Value::Nil, Value::Nil) => true,
 			(Value::Bool(b1), Value::Bool(b2)) => b1 == b2,
 			(Value::Int(i1), Value::Int(i2)) => i1 == i2,
+			(Value::Int(i1), Value::Float(f2)) =>
+				NotNan::new(*i1 as f64).unwrap() == *f2,
+			(Value::Float(f1), Value::Int(i2)) =>
+				*f1 == NotNan::new(*i2 as f64).unwrap(),
 			(Value::Float(f1), Value::Float(f2)) => f1 == f2,
 			(Value::String(s1), Value::String(s2)) => s1 == s2,
 			
@@ -317,7 +321,23 @@ impl Value {
 			Value::Nil => String::from("nil"),
 			Value::Bool(b) => format!("{:?}", b),
 			Value::Int(i) => format!("{}", i),
-			Value::Float(f) => format!("{}", f),
+			Value::Float(f) => {
+				let mut s;
+				if f.abs() >= 1e10 || f.abs() < 1e-2 {
+					s = format!("{:e}", f.into_inner());
+					if !s.contains(".") {
+						let parts: Vec<&str> = s.split("e").collect();
+						assert!(parts.len() == 2);
+						s = format!("{}.0e{}", parts[0], parts[1]);
+					}
+				} else {
+					s = format!("{}", f);
+					if f.round() == f.into_inner() {
+						s += ".0";
+					}
+				}
+				s
+			}
 			Value::String(s) => format!("{:?}", s),
 			
 			Value::Tuple(list) => {

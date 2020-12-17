@@ -92,17 +92,17 @@ peg::parser! {
 			--
 			x:(@) _ op:arith_op1() _ y:@ { Expr::Binary(op, Box::new(x), Box::new(y)) }
 			--
+			x:(@) _ op:arith_op2() _ y:@  { Expr::Binary(op, Box::new(x), Box::new(y)) }
+			--
 			"-" _ x:@ {
-				if let Expr::Primitive(Primitive::Int(i)) = x {
-					Expr::Primitive(Primitive::Int(-i))
-				} else {
-					Expr::Unary(UnaryOp::Minus, Box::new(x))
+				match x {
+					Expr::Primitive(Primitive::Int(i)) => Expr::Primitive(Primitive::Int(-i)),
+					Expr::Primitive(Primitive::Float(i)) => Expr::Primitive(Primitive::Float(-i)),
+					_ => Expr::Unary(UnaryOp::Minus, Box::new(x)),
 				}
 			}
 			--
-			x:(@) _ op:arith_op2() _ y:@  { Expr::Binary(op, Box::new(x), Box::new(y)) }
-			--
-			x:@ _ (quiet!{"^"}/expected!("arithmetic operator")) _ y:(@) { Expr::Binary(BinaryOp::Power,   Box::new(x), Box::new(y)) }
+			x:@ _ (quiet!{"^"}/expected!("arithmetic operator")) _ y:(@) { Expr::Binary(BinaryOp::Power, Box::new(x), Box::new(y)) }
 			--
 			t:@ ___ "[" _ k:expr() _ "]" { Expr::LExpr(LExpr::Index(Box::new(t), Box::new(k))) }
 			o:@ _ "." i:id() { Expr::LExpr(LExpr::Prop(Box::new(o), i)) }
