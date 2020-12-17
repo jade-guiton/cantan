@@ -117,6 +117,27 @@ native_func!(seq_map, vm, args, {
 	}
 });
 
+native_func!(seq_filter, vm, args, {
+	if args.len() != 2 {
+		return expected("1 argument", &(args.len() - 1).to_string());
+	}
+	let seq = args[0].get_sequence()?;
+
+	let mut filtered = vec![];
+	let callable = args[1].get_callable()?;
+	for x in seq.deref() {
+		if callable.call(vm, vec![x.clone()])?.get_bool()? {
+			filtered.push(x.clone());
+		}
+	}
+	
+	match &args[0] {
+		Value::Tuple(_) => Ok(Value::Tuple(vm.gc.add(filtered))),
+		Value::List(_) => Ok(Value::List(vm.gc.add_cell(filtered))),
+		_ => unimplemented!(),
+	}
+});
+
 native_func!(tuple_to_list, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let tuple = args[0].get_tuple()?;
@@ -344,6 +365,37 @@ native_func!(iter_map, vm, args, {
 	})))
 });
 
+#[derive(Trace)]
+struct FilterIterator {
+	before: GcCell<dyn NativeIterator>,
+	func: Callable,
+}
+
+impl NativeIterator for FilterIterator {
+	fn next(&mut self, vm: &mut VmArena) -> Result<Option<Value>, String> {
+		loop {
+			match self.before.borrow_mut().next(vm)? {
+				Some(x) => {
+					if self.func.call(vm, vec![x.clone()])?.get_bool()? {
+						return Ok(Some(x));
+					}
+				},
+				None => return Ok(None),
+			}
+		}
+	}
+}
+
+native_func!(iter_filter, vm, args, {
+	check_arg_cnt(1, args.len() - 1)?;
+	let before = args[0].get_iter()?;
+	let func = args[1].get_callable()?;
+	
+	Ok(Value::Iterator(vm.gc.add_cell(FilterIterator {
+		before, func,
+	})))
+});
+
 
 type NativeFn = fn(&mut VmArena, Vec<Value>) -> Result<Value, String>;
 
@@ -365,6 +417,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("sub", seq_sub),
 		("to_iter", seq_to_iter),
 		("map", seq_map),
+		("filter", seq_filter),
 		("to_list", tuple_to_list),
 	]),
 	(Type::List, vec![
@@ -375,6 +428,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("sub", seq_sub),
 		("to_iter", seq_to_iter),
 		("map", seq_map),
+		("filter", seq_filter),
 		("to_tuple", list_to_tuple),
 	]),
 	(Type::String, vec![
@@ -386,6 +440,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("to_tuple", iter_to_tuple),
 		("next", iter_next),
 		("map", iter_map),
+		("filter", iter_filter),
 	])
 ].iter().map(|(t,p)| (*t, p.iter().map(|(s,f)| (s.to_string(), *f)).collect())).collect());
 
