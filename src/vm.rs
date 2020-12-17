@@ -603,6 +603,11 @@ impl VmState {
 		Ok(None)
 	}
 	
+	fn unroll(&mut self) {
+		self.calls.clear();
+		self.stack.clear();
+	}
+	
 	// Like run_instr_unsafe, but clears calls and the stack on errors
 	// Does not clear registers
 	// Using this, VmState can be reused in interactive mode even after error
@@ -610,8 +615,7 @@ impl VmState {
 		match self.run_instr_unsafe(gc) {
 			Ok(x) => Ok(x),
 			Err(err) => {
-				self.calls.clear();
-				self.stack.clear();
+				self.unroll();
 				Err(err)
 			}
 		}
@@ -632,7 +636,7 @@ impl VmArena {
 		VmArena { gc, vm }
 	}
 	
-	fn run(&mut self, call_base: usize) -> Result<(), String> {
+	fn run_unsafe(&mut self, call_base: usize) -> Result<(), String> {
 		self.vm.borrow_mut().check_end(); // In case function is empty
 		if self.vm.borrow().check_stack_size(call_base) { return Ok(()); }
 		
@@ -646,14 +650,28 @@ impl VmArena {
 				let mut res = vec![];
 				match call {
 					NativeCall::NativeFunction(params) => {
-						res.push(params.func.call(self, params.args)?);
+						match params.func.call(self, params.args) {
+							Ok(val) => res.push(val),
+							Err(err) => {
+								self.vm.borrow_mut().unroll();
+								return Err(err);
+							}
+						}
 					},
 					NativeCall::Iterator(iter) => {
-						if let Some(value) = iter.borrow_mut().next(self)? {
-							res.push(value);
-							res.push(Value::Bool(true));
-						} else {
-							res.push(Value::Bool(false));
+						match iter.borrow_mut().next(self) {
+							Ok(val) => {
+								if let Some(val) = val {
+									res.push(val);
+									res.push(Value::Bool(true));
+								} else {
+									res.push(Value::Bool(false));
+								}
+							},
+							Err(err) => {
+								self.vm.borrow_mut().unroll();
+								return Err(err);
+							}
 						}
 					},
 				}
@@ -662,6 +680,15 @@ impl VmArena {
 			}
 		}
 		Ok(())
+	}
+	
+	fn run(&mut self, call_base: usize) -> Result<(), String> {
+		if let Err(err) = self.run_unsafe(call_base) {
+			self.gc.collect();
+			Err(err)
+		} else {
+			Ok(())
+		}
 	}
 	
 	fn run_function(&mut self, func: Rc<CompiledFunction>) -> Result<(), String>  {
