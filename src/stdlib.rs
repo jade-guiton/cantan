@@ -53,6 +53,31 @@ native_func!(repr, args, {
 	Ok(Value::from(args[0].repr()))
 });
 
+native_func!(read_file, args, {
+	check_arg_cnt(1, args.len())?;
+	let path = args[0].get_string()?;
+	let contents = std::fs::read_to_string(path).map_err(|e| format!("IO Error: {}", e))?;
+	Ok(Value::from(contents))
+});
+
+native_func!(error, args, {
+	let mut msg = String::from("User error");
+	if !args.is_empty() {
+		msg += ": ";
+	}
+	for (i, arg) in args.iter().enumerate() {
+		if let Ok(s) = arg.get_string() {
+			msg += &s;
+		} else {
+			msg += &arg.repr();
+		}
+		if i != args.len()-1 {
+			msg += " ";
+		}
+	}
+	Err(msg)
+});
+
 native_func!(seq_size, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let seq = args[0].get_sequence()?;
@@ -271,10 +296,40 @@ impl NativeIterator for CharIterator {
 	}
 }
 
+native_func!(str_size, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let s = args[0].get_string()?;
+	Ok(Value::Int(s.len() as i32))
+});
+
 native_func!(str_chars, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let s = args[0].get_string()?;
 	Ok(Value::from_native_iter(&mut vm.gc, CharIterator::new(s)))
+});
+
+native_func!(str_split, vm, args, {
+	check_arg_cnt(1, args.len() - 1)?;
+	let s = args[0].get_string()?;
+	let pat = args[1].get_string()?;
+	let parts: Vec<Value> = s.split(&pat).map(|s| Value::String(String::from(s).into_boxed_str())).collect();
+	Ok(Value::List(vm.gc.add_cell(parts)))
+});
+
+native_func!(str_contains, args, {
+	check_arg_cnt(1, args.len() - 1)?;
+	let s = args[0].get_string()?;
+	let pat = args[1].get_string()?;
+	Ok(Value::Bool(s.contains(&pat)))
+});
+
+native_func!(str_parse_int, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let s = args[0].get_string()?;
+	match s.parse() {
+		Ok(i) => Ok(Value::Int(i)),
+		Err(_) => Ok(Value::Nil),
+	}
 });
 
 native_func!(iter_join, vm, args, {
@@ -406,6 +461,8 @@ pub static FUNCTIONS: Lazy<HashMap<String, NativeFn>> = Lazy::new(|| [
 	("xrange", xrange),
 	("range", range),
 	("type", type_),
+	("read_file", read_file),
+	("error", error),
 ].iter().map(|(s,f)| (s.to_string(), *f)).collect());
 
 pub static GLOBAL_NAMES: Lazy<HashSet<String>> = Lazy::new(||
@@ -432,7 +489,11 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("to_tuple", list_to_tuple),
 	]),
 	(Type::String, vec![
-		("chars", str_chars as NativeFn),
+		("size", str_size as NativeFn),
+		("chars", str_chars),
+		("split", str_split),
+		("contains", str_contains),
+		("parse_int", str_parse_int),
 	]),
 	(Type::Iterator, vec![
 		("join", iter_join as NativeFn),
