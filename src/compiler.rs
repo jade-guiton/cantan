@@ -264,6 +264,21 @@ impl<'a> FunctionContext<'a> {
 				self.func.code.push(Instr::Binary(op));
 				self.stack_size -= 2;
 			},
+			Expr::Condition(cond, expr1, expr2) => {
+				self.compile_expression(*cond)?;
+				let jump1 = self.func.code.len();
+				self.func.code.push(Instr::JumpIfNot(0));
+				self.stack_size -= 1;
+				self.compile_expression(*expr1)?;
+				let jump2 = self.func.code.len();
+				self.func.code.push(Instr::Jump(0));
+				self.func.code[jump1] = Instr::JumpIfNot(
+					self.compute_jump_from(jump1)?);
+				self.compile_expression(*expr2)?;
+				self.func.code[jump2] = Instr::Jump(
+					self.compute_jump_from(jump2)?);
+				self.stack_size -= 2;
+			},
 		}
 		self.stack_size += 1;
 		Ok(())

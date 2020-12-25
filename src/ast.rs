@@ -46,6 +46,7 @@ pub enum Expr {
 	Call(Box<Expr>, Vec<Expr>),
 	Unary(UnaryOp, Box<Expr>),
 	Binary(BinaryOp, Box<Expr>, Box<Expr>),
+	Condition(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone)]

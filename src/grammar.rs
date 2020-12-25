@@ -12,7 +12,7 @@ fn get_char(s: &str) -> char {
 static RESERVED: [&str; 19] = [
 	"let",
 	"if", "else", "while", "do", "loop", "for", "in", "end",
-	"break", "continue", "return",
+	"break", "continue", "ret",
 	"not", "and", "or",
 	"nil", "true", "false",
 	"fn",
@@ -51,7 +51,7 @@ peg::parser! {
 			/ "for" _ "(" _ i:id() _ "in" wb() _ e:expr() _ ")" _ b:block() _ "end" wb() { Statement::For(i,e,b) }
 			/ "break" _ c:loop_count()? { Statement::Break(c.unwrap_or(1)) }
 			/ "continue" _ c:loop_count()? { Statement::Continue(c.unwrap_or(1)) }
-			/ "return" wb() _ e:expr()? { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
+			/ "ret" wb() _ e:expr()? { Statement::Return(e.unwrap_or(Expr::Primitive(Primitive::Nil))) }
 			/ l:lexpr() ___ op:assign_op() _ e:expr() {
 				if let Some(op) = op {
 					Statement::Set(l.clone(), Expr::Binary(op, Box::new(Expr::LExpr(l)), Box::new(e)))
@@ -84,6 +84,8 @@ peg::parser! {
 		rule loop_count() -> u32 = "(" _ i:$(['0'..='9']+) _ ")" { i.parse().unwrap() }
 		#[cache]
 		rule expr() -> Expr = precedence! {
+			"if" wb() "(" _ x:expr() _ ")" _ "=" _ y:expr() _ "else" wb() _ z:@ { Expr::Condition(Box::new(x), Box::new(y), Box::new(z)) }
+			--
 			x:(@) _ op:bool_op() wb() _ y:@ { Expr::Binary(op, Box::new(x), Box::new(y)) }
 			--
 			"not" wb() x:@ { Expr::Unary(UnaryOp::Not, Box::new(x)) }
