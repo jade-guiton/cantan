@@ -226,6 +226,7 @@ impl Value {
 	get_prim!(get_list, GcCell<Vec<Value>>, List);
 	get_prim!(get_tuple, GcRef<Vec<Value>>, Tuple);
 	get_prim!(get_iter, GcCell<dyn NativeIterator>, Iterator);
+	get_prim!(get_map, GcCell<HashMap<Value, Value>>, Map);
 	
 	pub fn get_sequence<'a>(&'a self) -> Result<ImmutSequence<'a>, String> {
 		match self {

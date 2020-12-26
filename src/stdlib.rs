@@ -5,7 +5,7 @@ use std::iter::Iterator;
 use std::ops::Deref;
 
 use once_cell::sync::Lazy;
-use unicode_segmentation::GraphemeCursor;
+use unicode_segmentation::{UnicodeSegmentation, GraphemeCursor};
 
 use crate::value::{expected, NativeIterator, Callable, Type, Value};
 use crate::gc::{Trace, Primitive, GcCell, GcHeap};
@@ -51,6 +51,62 @@ native_func!(writeln, args, {
 native_func!(repr, args, {
 	check_arg_cnt(1, args.len())?;
 	Ok(Value::from(args[0].repr()))
+});
+
+
+struct IntIterator {
+	next: Cell<i32>,
+	until: i32,
+	step: i32,
+}
+unsafe impl Primitive for IntIterator {}
+
+impl NativeIterator for IntIterator {
+	fn next(&mut self, _vm: &mut VmArena) -> Result<Option<Value>, String> {
+		let next = self.next.get();
+		if next < self.until {
+			self.next.set(next + self.step);
+			Ok(Some(Value::Int(next)))
+		} else {
+			Ok(None)
+		}
+	}
+}
+
+fn check_range_args(args: &[Value]) -> Result<(Option<i32>, i32, i32), String> {
+	if args.is_empty() || args.len() > 3 {
+		return expected("1-3 arguments", &args.len().to_string());
+	}
+	let (start, until) = if args.len() == 1 {
+		(None, args[0].get_int()?)
+	} else {
+		(Some(args[0].get_int()?), args[1].get_int()?)
+	};
+	let step = if args.len() == 3 { args[2].get_int()? } else { 1 };
+	Ok((start, until, step))
+}
+
+native_func!(xrange, vm, args, {
+	let (start, until, step) = check_range_args(&args)?;
+	Ok(Value::from_native_iter(&mut vm.gc, IntIterator {
+		next: Cell::new(start.unwrap_or(0)),
+		until,
+		step
+	}))
+});
+
+native_func!(range, vm, args, {
+	let (start, until, step) = check_range_args(&args)?;
+	Ok(Value::from_native_iter(&mut vm.gc, IntIterator {
+		next: Cell::new(start.unwrap_or(1)),
+		until: until + 1,
+		step
+	}))
+});
+
+native_func!(type_, args, {
+	check_arg_cnt(1, args.len())?;
+	Ok(Value::String(args[0].get_type().get_string().to_string().into_boxed_str()))
 });
 
 native_func!(read_file, args, {
@@ -208,59 +264,39 @@ native_func!(list_to_tuple, vm, args, {
 	Ok(Value::Tuple(vm.gc.add(list.deref().clone())))
 });
 
-struct IntIterator {
-	next: Cell<i32>,
-	until: i32,
-	step: i32,
-}
-unsafe impl Primitive for IntIterator {}
-
-impl NativeIterator for IntIterator {
-	fn next(&mut self, _vm: &mut VmArena) -> Result<Option<Value>, String> {
-		let next = self.next.get();
-		if next < self.until {
-			self.next.set(next + self.step);
-			Ok(Some(Value::Int(next)))
-		} else {
-			Ok(None)
-		}
-	}
-}
-
-fn check_range_args(args: &[Value]) -> Result<(Option<i32>, i32, i32), String> {
-	if args.is_empty() || args.len() > 3 {
-		return expected("1-3 arguments", &args.len().to_string());
-	}
-	let (start, until) = if args.len() == 1 {
-		(None, args[0].get_int()?)
-	} else {
-		(Some(args[0].get_int()?), args[1].get_int()?)
-	};
-	let step = if args.len() == 3 { args[2].get_int()? } else { 1 };
-	Ok((start, until, step))
-}
-
-native_func!(xrange, vm, args, {
-	let (start, until, step) = check_range_args(&args)?;
-	Ok(Value::from_native_iter(&mut vm.gc, IntIterator {
-		next: Cell::new(start.unwrap_or(0)),
-		until,
-		step
-	}))
+native_func!(map_contains, args, {
+	check_arg_cnt(1, args.len() - 1)?;
+	let map = args[0].get_map()?;
+	let map = map.borrow();
+	Ok(Value::Bool(map.contains_key(&args[1])))
 });
 
-native_func!(range, vm, args, {
-	let (start, until, step) = check_range_args(&args)?;
-	Ok(Value::from_native_iter(&mut vm.gc, IntIterator {
-		next: Cell::new(start.unwrap_or(1)),
-		until: until + 1,
-		step
-	}))
+native_func!(map_remove, args, {
+	check_arg_cnt(1, args.len() - 1)?;
+	let map = args[0].get_map()?;
+	let mut map = map.borrow_mut();
+	match map.remove(&args[1]) {
+		Some(val) => Ok(val),
+		None => Ok(Value::Nil),
+	}
 });
 
-native_func!(type_, args, {
-	check_arg_cnt(1, args.len())?;
-	Ok(Value::String(args[0].get_type().get_string().to_string().into_boxed_str()))
+native_func!(map_size, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let map = args[0].get_map()?;
+	let map = map.borrow();
+	Ok(Value::Int(map.len() as i32))
+});
+
+native_func!(map_pairs, vm, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let map = args[0].get_map()?;
+	let map = map.borrow();
+	let list: Vec<Value> = map
+		.iter()
+		.map(|(k,v)| Value::Tuple(vm.gc.add(vec![k.clone(), v.clone()])))
+		.collect();
+	Ok(Value::List(vm.gc.add_cell(list)))
 });
 
 struct CharIterator {
@@ -299,7 +335,7 @@ impl NativeIterator for CharIterator {
 native_func!(str_size, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let s = args[0].get_string()?;
-	Ok(Value::Int(s.len() as i32))
+	Ok(Value::Int(s.graphemes(true).count() as i32))
 });
 
 native_func!(str_chars, vm, args, {
@@ -487,6 +523,12 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("map", seq_map),
 		("filter", seq_filter),
 		("to_tuple", list_to_tuple),
+	]),
+	(Type::Map, vec![
+		("contains", map_contains as NativeFn),
+		("remove", map_remove),
+		("size", map_size),
+		("pairs", map_pairs),
 	]),
 	(Type::String, vec![
 		("size", str_size as NativeFn),
