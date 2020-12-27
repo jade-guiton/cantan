@@ -232,6 +232,17 @@ native_func!(list_push, args, {
 	Ok(Value::Nil)
 });
 
+native_func!(list_pop, args, {
+	check_arg_cnt(0, args.len() - 1)?;
+	let list = args[0].get_list()?;
+	let mut list = list.borrow_mut();
+	if let Some(val) = list.pop() {
+		Ok(val)
+	} else {
+		Err(String::from("Cannot pop empty list"))
+	}
+});
+
 native_func!(list_insert, args, {
 	check_arg_cnt(2, args.len() - 1)?;
 	let list = args[0].get_list()?;
@@ -246,14 +257,17 @@ native_func!(list_insert, args, {
 	}
 });
 
-native_func!(list_pop, args, {
-	check_arg_cnt(0, args.len() - 1)?;
+native_func!(list_remove, args, {
+	check_arg_cnt(1, args.len() - 1)?;
 	let list = args[0].get_list()?;
-	let mut list = list.borrow_mut();
-	if let Some(val) = list.pop() {
-		Ok(val)
+	let len = list.borrow().len();
+	let idx = args[1].get_int()?;
+	if let Some(idx) = usize::try_from(idx).ok()
+			.filter(|idx| *idx < len) {
+		list.borrow_mut().remove(idx);
+		Ok(Value::Nil)
 	} else {
-		Err(String::from("Cannot pop empty list"))
+		Err(format!("Cannot remove position {} in list of length {}", idx, len))
 	}
 });
 
@@ -515,8 +529,9 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 	]),
 	(Type::List, vec![
 		("push", list_push as NativeFn),
-		("insert", list_insert),
 		("pop", list_pop),
+		("insert", list_insert),
+		("remove", list_remove),
 		("size", seq_size),
 		("sub", seq_sub),
 		("to_iter", seq_to_iter),

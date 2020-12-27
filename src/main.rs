@@ -84,7 +84,7 @@ fn main() {
 			match cmd.name {
 				"parse" => {
 					if let Some(prog) = parse(&cmd.file.unwrap()) {
-						println!("{:?}", prog);
+						println!("{:#?}", prog);
 					}
 				},
 				"compile" => {

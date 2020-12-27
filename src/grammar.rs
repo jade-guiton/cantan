@@ -9,9 +9,9 @@ fn get_char(s: &str) -> char {
 	s.chars().next().unwrap()
 }
 
-static RESERVED: [&str; 19] = [
+static RESERVED: [&str; 20] = [
 	"let",
-	"if", "else", "while", "do", "loop", "for", "in", "end",
+	"if", "else", "elseif", "while", "do", "loop", "for", "in", "end",
 	"break", "continue", "ret",
 	"not", "and", "or",
 	"nil", "true", "false",
@@ -40,7 +40,7 @@ peg::parser! {
 	grammar cantan_parser() for str {
 		pub rule program() -> Block = _ b:block() _ { b }
 		rule block() -> Block = s:(statement() ** statement_sep()) { s }
-		rule statement_sep() = ___ ("\n" / ";") _
+		rule statement_sep() = ___ ("\n" / ";" / comment()) _
 		pub rule lone_statement() -> Statement = _ s:(s:statement() {s} / e:expr() {Statement::ExprStat(e)}) _ { s }
 		rule statement() -> Statement
 			= "let" wb() _ p:pattern() _ e:val_or_fn() { Statement::Let(p, e) }
@@ -60,7 +60,7 @@ peg::parser! {
 				}
 			}
 			/ e:expr() {? if let Expr::Call(_,_) = e { Ok(Statement::ExprStat(e)) } else { Err("function call") } }
-		rule else_if() -> (Expr, Block) = "else" __ "if" wb() c:pexpr() _ t:block() _ { (c,t) }
+		rule else_if() -> (Expr, Block) = "elseif" wb() c:pexpr() _ t:block() _ { (c,t) }
 		rule else_() -> Block = "else" wb() _ b:block() _ { b }
 		rule pattern() -> Pattern
 			= i:id() { Pattern::Id(i) }
@@ -88,7 +88,7 @@ peg::parser! {
 			--
 			x:(@) _ op:bool_op() wb() _ y:@ { Expr::Binary(op, Box::new(x), Box::new(y)) }
 			--
-			"not" wb() x:@ { Expr::Unary(UnaryOp::Not, Box::new(x)) }
+			"not" wb() _ x:@ { Expr::Unary(UnaryOp::Not, Box::new(x)) }
 			--
 			x:(@) _ op:comp_op() _ y:@ { Expr::Binary(op, Box::new(x), Box::new(y)) }
 			--
