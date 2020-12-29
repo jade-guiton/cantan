@@ -73,43 +73,58 @@ pub trait NativeIterator: Trace {
 	fn next(&mut self, vm: &mut VmArena) -> Result<Option<Value>, String>;
 }
 
+pub enum SmartRef<'a, T: ?Sized> {
+	Static(&'a T),
+	Dynamic(std::cell::Ref<'a, T>),
+}
+
+impl<'a, T: ?Sized> Deref for SmartRef<'a, T> {
+	type Target = T;
+	fn deref(&self) -> &T {
+		match self {
+			SmartRef::Static(r) => r,
+			SmartRef::Dynamic(r) => r.deref(),
+		}
+	}
+}
+
 #[derive(Trace)]
-pub struct ListIterator {
-	list: Vec<Value>,
+pub enum GcSequence {
+	Tuple(GcRef<Vec<Value>>),
+	List(GcCell<Vec<Value>>),
+}
+
+impl GcSequence {
+	fn deref(&self) -> SmartRef<[Value]> {
+		match self {
+			GcSequence::Tuple(tuple) => SmartRef::Static(tuple.deref()),
+			GcSequence::List(list) => SmartRef::Dynamic(std::cell::Ref::map(list.borrow(), |v| v.deref())),
+		}
+	}
+}
+
+#[derive(Trace)]
+pub struct SequenceIterator {
+	seq: GcSequence,
 	idx: Cell<usize>,
 }
 
-impl ListIterator {
-	pub fn new(list: Vec<Value>) -> Self {
-		ListIterator {
-			list,
+impl SequenceIterator {
+	pub fn new(seq: GcSequence) -> Self {
+		SequenceIterator {
+			seq,
 			idx: Cell::new(0),
 		}
 	}
 }
 
-impl NativeIterator for ListIterator {
+impl NativeIterator for SequenceIterator {
 	fn next(&mut self, _vm: &mut VmArena) -> Result<Option<Value>, String> {
-		if let Some(val) = self.list.get(self.idx.get()).cloned() {
+		if let Some(val) = self.seq.deref().get(self.idx.get()).cloned() {
 			self.idx.set(self.idx.get() + 1);
 			Ok(Some(val))
 		} else {
 			Ok(None)
-		}
-	}
-}
-
-pub enum ImmutSequence<'seq> {
-	Tuple(GcRef<Vec<Value>>),
-	List(std::cell::Ref<'seq, Vec<Value>>),
-}
-
-impl<'seq> Deref for ImmutSequence<'seq> {
-	type Target = [Value];
-	fn deref(&self) -> &[Value] {
-		match self {
-			ImmutSequence::Tuple(tuple) => tuple.deref(),
-			ImmutSequence::List(list) => list.deref(),
 		}
 	}
 }
@@ -228,10 +243,10 @@ impl Value {
 	get_prim!(get_iter, GcCell<dyn NativeIterator>, Iterator);
 	get_prim!(get_map, GcCell<HashMap<Value, Value>>, Map);
 	
-	pub fn get_sequence<'a>(&'a self) -> Result<ImmutSequence<'a>, String> {
+	pub fn get_sequence<'a>(&'a self) -> Result<SmartRef<'a,[Value]>, String> {
 		match self {
-			Value::Tuple(tuple) => Ok(ImmutSequence::Tuple(tuple.clone())),
-			Value::List(list) => Ok(ImmutSequence::List(list.borrow())),
+			Value::Tuple(tuple) => Ok(SmartRef::Static(tuple)),
+			Value::List(list) => Ok(SmartRef::Dynamic(std::cell::Ref::map(list.borrow(), |l| l.deref()))),
 			_ => expected_types("Tuple/List", self),
 		}
 	}
@@ -499,10 +514,10 @@ impl Value {
 	pub fn make_iter(&self, gc: &mut GcHeap) -> Result<Option<Value>, String> {
 		match self {
 			Value::List(list) => {
-				Ok(Some(Value::from_native_iter(gc, ListIterator::new(list.borrow().clone()))))
+				Ok(Some(Value::from_native_iter(gc, SequenceIterator::new(GcSequence::List(list.clone())))))
 			},
 			Value::Tuple(tuple) => {
-				Ok(Some(Value::from_native_iter(gc, ListIterator::new(tuple.deref().clone()))))
+				Ok(Some(Value::from_native_iter(gc, SequenceIterator::new(GcSequence::Tuple(tuple.clone())))))
 			},
 			Value::Iterator(_) => Ok(None),
 			_ => Err(format!("Cannot iterate: {}", self.repr())),
