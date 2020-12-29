@@ -89,6 +89,10 @@ unsafe impl<T: Trace + ?Sized> Trace for RefCell<T> {
 pub type GcCell<T> = GcRef<RefCell<T>>;
 
 
+thread_local! {
+	static MANY_ROOTED: Cell<u32> = Cell::new(0);
+}
+
 #[repr(C)]
 pub(super) struct GcWrapper<T: Trace + ?Sized> {
 	marked: Cell<bool>,
@@ -129,6 +133,9 @@ trait GcWrapped {
 impl<T: Trace + ?Sized> GcWrapped for GcWrapper<T> {
 	fn root(&self) {
 		self.root_cnt.set(self.root_cnt.get() + 1);
+		if self.root_cnt.get() >= 128 {
+			MANY_ROOTED.with(|c| c.set(c.get().wrapping_add(1)));
+		}
 	}
 	fn unroot(&self) {
 		self.root_cnt.set(self.root_cnt.get() - 1);
@@ -231,6 +238,7 @@ pub struct GcHeap {
 	objects: Vec<Box<dyn GcWrapped>>,
 	threshold: usize,
 	used: usize,
+	last_many_rooted: u32,
 }
 
 impl GcHeap {
@@ -239,6 +247,7 @@ impl GcHeap {
 			objects: vec![],
 			threshold: INIT_THRESHOLD,
 			used: 0,
+			last_many_rooted: 0,
 		}
 	}
 	
@@ -283,7 +292,9 @@ impl GcHeap {
 	}
 	
 	pub fn step(&mut self) {
-		if self.has_very_rooted() {
+		let many_rooted = MANY_ROOTED.with(|c| c.get());
+		if many_rooted != self.last_many_rooted {
+			self.last_many_rooted = many_rooted;
 			self.weed_roots();
 			if self.has_very_rooted() {
 				panic!("GC object is rooted 128 times or more; this is not supposed to happen");
