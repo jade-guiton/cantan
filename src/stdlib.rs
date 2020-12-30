@@ -4,6 +4,7 @@ use std::convert::TryFrom;
 use std::iter::Iterator;
 use std::ops::Deref;
 
+use rand::prelude::random;
 use once_cell::sync::Lazy;
 use unicode_segmentation::{UnicodeSegmentation, GraphemeCursor};
 
@@ -102,6 +103,13 @@ native_func!(range, vm, args, {
 		until: until + 1,
 		step
 	}))
+});
+
+native_func!(rand_range, args, {
+	let (start, until, step) = check_range_args(&args)?;
+	let start = start.unwrap_or(1);
+	let n = (until+1-start) / step;
+	Ok(Value::Int(start + random::<i32>().rem_euclid(n) * step))
 });
 
 native_func!(type_, args, {
@@ -513,6 +521,7 @@ pub static FUNCTIONS: Lazy<HashMap<String, NativeFn>> = Lazy::new(|| [
 	("type", type_),
 	("read_file", read_file),
 	("error", error),
+	("rand_range", rand_range),
 ].iter().map(|(s,f)| (s.to_string(), *f)).collect());
 
 pub static GLOBAL_NAMES: Lazy<HashSet<String>> = Lazy::new(||

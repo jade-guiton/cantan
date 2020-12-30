@@ -88,9 +88,12 @@ unsafe impl<T: Trace + ?Sized> Trace for RefCell<T> {
 
 pub type GcCell<T> = GcRef<RefCell<T>>;
 
+const SUPER_ROOT_THRESHOLD: u8 = 200;
 
 thread_local! {
-	static MANY_ROOTED: Cell<u32> = Cell::new(0);
+	static GC_INITIALIZED: Cell<bool> = Cell::new(false);
+	static ROOT_TOTAL: Cell<u32> = Cell::new(0);
+	static HAS_SUPER_ROOT: Cell<bool> = Cell::new(false);
 }
 
 #[repr(C)]
@@ -133,12 +136,14 @@ trait GcWrapped {
 impl<T: Trace + ?Sized> GcWrapped for GcWrapper<T> {
 	fn root(&self) {
 		self.root_cnt.set(self.root_cnt.get() + 1);
-		if self.root_cnt.get() >= 128 {
-			MANY_ROOTED.with(|c| c.set(c.get().wrapping_add(1)));
+		ROOT_TOTAL.with(|c| c.set(c.get() + 1));
+		if self.root_cnt.get() >= SUPER_ROOT_THRESHOLD {
+			HAS_SUPER_ROOT.with(|c| c.set(true));
 		}
 	}
 	fn unroot(&self) {
 		self.root_cnt.set(self.root_cnt.get() - 1);
+		ROOT_TOTAL.with(|c| c.set(c.get() - 1));
 	}
 	fn is_rooted(&self) -> bool { self.root_cnt.get() > 0 }
 	fn root_cnt(&self) -> u8 { self.root_cnt.get() }
@@ -238,16 +243,16 @@ pub struct GcHeap {
 	objects: Vec<Box<dyn GcWrapped>>,
 	threshold: usize,
 	used: usize,
-	last_many_rooted: u32,
 }
 
 impl GcHeap {
 	pub fn new() -> GcHeap {
+		assert!(!GC_INITIALIZED.with(|c| c.get()), "Only one GcHeap per thread is allowed");
+		GC_INITIALIZED.with(|c| c.set(true));
 		GcHeap {
 			objects: vec![],
 			threshold: INIT_THRESHOLD,
 			used: 0,
-			last_many_rooted: 0,
 		}
 	}
 	
@@ -256,6 +261,7 @@ impl GcHeap {
 		// Safety: we just pushed the object, so we know its concrete type
 		let wrapper = unsafe { &*(&**self.objects.last().unwrap() as *const dyn GcWrapped as *const GcWrapper<T>) };
 		self.used += wrapper.size();
+		wrapper.unroot_children();
 		GcRef::new(wrapper)
 	}
 	
@@ -267,11 +273,16 @@ impl GcHeap {
 		for wrapper in self.objects.iter() {
 			wrapper.unroot_children();
 		}
+		if HAS_SUPER_ROOT.with(|c| c.get()) {
+			if ROOT_TOTAL.with(|c| c.get()) >= SUPER_ROOT_THRESHOLD as u32
+					&& self.objects.iter().any(|wrapper| wrapper.root_cnt() >= SUPER_ROOT_THRESHOLD) {
+				panic!("GC object is rooted {} times or more; this is not supposed to happen", SUPER_ROOT_THRESHOLD);
+			}
+			HAS_SUPER_ROOT.with(|c| c.set(false));
+		}
 	}
 	
 	pub fn collect(&mut self) {
-		self.weed_roots();
-
 		for wrapper in self.objects.iter() {
 			if wrapper.is_rooted() {
 				wrapper.mark();
@@ -287,23 +298,23 @@ impl GcHeap {
 		}
 	}
 	
-	fn has_very_rooted(&self) -> bool {
-		self.objects.iter().any(|wrapper| wrapper.root_cnt() >= 128)
-	}
-	
 	pub fn step(&mut self) {
-		let many_rooted = MANY_ROOTED.with(|c| c.get());
-		if many_rooted != self.last_many_rooted {
-			self.last_many_rooted = many_rooted;
+		// To avoid root count overflow in cases where lots of roots are created
+		// without a lot of allocation
+		if HAS_SUPER_ROOT.with(|c| c.get()) {
 			self.weed_roots();
-			if self.has_very_rooted() {
-				panic!("GC object is rooted 128 times or more; this is not supposed to happen");
-			}
 		}
 		
 		if self.used >= self.threshold {
+			// Collection is inefficient if the set of roots is too large.
+			// This threshold should be greater than whatever a normal number
+			// of roots post-weeding might be (~2), to avoid repeated weeding out.
+			if ROOT_TOTAL.with(|c| c.get()) >= 3 {
+				self.weed_roots();
+			}
+			
 			self.collect();
-			self.threshold = self.used * 2;
+			self.threshold = (self.used + 65_536).max(self.used * 2);
 		}
 	}
 	
@@ -324,6 +335,7 @@ impl GcHeap {
 // GcHeap panics when dropped if there are still living roots
 impl Drop for GcHeap {
 	fn drop(&mut self) {
+		self.weed_roots();
 		self.collect();
 		if !self.is_empty() {
 			self.inspect();
