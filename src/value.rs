@@ -543,6 +543,7 @@ impl PartialEq for Value {
 			(Value::Object(o1), Value::Object(o2)) => o1.get_addr() == o2.get_addr(),
 			(Value::Function(f1), Value::Function(f2)) => f1.get_addr() == f2.get_addr(),
 			(Value::NativeFunction(f1), Value::NativeFunction(f2)) => f1.get_addr() == f2.get_addr(),
+			(Value::Iterator(i1), Value::Iterator(i2)) => i1.get_addr() == i2.get_addr(),
 			_ => false,
 		}
 	}
