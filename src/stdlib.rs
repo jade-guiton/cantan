@@ -513,19 +513,29 @@ native_func!(iter_filter, vm, args, {
 type NativeFn = fn(&mut VmArena, Vec<Value>) -> Result<Value, String>;
 
 pub static FUNCTIONS: Lazy<HashMap<String, NativeFn>> = Lazy::new(|| [
-	("log", log as NativeFn),
-	("writeln", writeln),
-	("repr", repr),
+	("repr", repr as NativeFn),
 	("xrange", xrange),
 	("range", range),
 	("type", type_),
 	("read_file", read_file),
 	("error", error),
-	("rand_range", rand_range),
 ].iter().map(|(s,f)| (s.to_string(), *f)).collect());
 
+pub static MODULES: Lazy<HashMap<String, HashMap<String, NativeFn>>> = Lazy::new(|| [
+	("term", vec![
+		("log", log as NativeFn),
+		("writeln", writeln),
+	]),
+	("file", vec![
+		("read", read_file as NativeFn),
+	]),
+	("rand", vec![
+		("range", rand_range as NativeFn),
+	]),
+].iter().map(|(m,p)| (m.to_string(), p.iter().map(|(s,f)| (s.to_string(), *f)).collect())).collect());
+
 pub static GLOBAL_NAMES: Lazy<HashSet<String>> = Lazy::new(||
-	FUNCTIONS.keys().cloned().collect());
+	FUNCTIONS.keys().cloned().chain(MODULES.keys().cloned()).collect());
 
 pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|| [
 	(Type::Tuple, vec![
@@ -574,5 +584,12 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 pub fn create(globals: &mut HashMap<String, Value>, gc: &mut GcHeap) {
 	for (name, func) in FUNCTIONS.deref() {
 		globals.insert(name.clone(), Value::from_native_func(gc, func, None));
+	}
+	for (name, methods) in MODULES.deref() {
+		let mut map = HashMap::new();
+		for (name, func) in methods {
+			map.insert(name.clone(), Value::from_native_func(gc, func, None));
+		}
+		globals.insert(name.clone(), Value::Object(gc.add_cell(map)));
 	}
 }
