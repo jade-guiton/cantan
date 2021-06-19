@@ -79,7 +79,7 @@ peg::parser! {
 				/ "-=" { BinaryOp::Minus }
 				/ "*=" { BinaryOp::Times }
 				/ "/=" { BinaryOp::Divides }
-			} / expected!("arithmetic assignement operator")
+			} / expected!("arithmetic/assignement op")
 		rule pexpr() -> Expr = "(" _ e:expr() _ ")" { e }
 		rule loop_count() -> u32 = "(" _ i:$(['0'..='9']+) _ ")" { i.parse().unwrap() }
 		#[cache]
@@ -104,19 +104,19 @@ peg::parser! {
 				}
 			}
 			--
-			x:@ _ (quiet!{"^"}/expected!("arithmetic operator")) _ y:(@) { Expr::Binary(BinaryOp::Power, Box::new(x), Box::new(y)) }
+			x:@ _ (quiet!{"^"}/expected!("arithmetic op")) _ y:(@) { Expr::Binary(BinaryOp::Power, Box::new(x), Box::new(y)) }
 			--
 			t:@ ___ "[" _ k:expr() _ "]" { Expr::LExpr(LExpr::Index(Box::new(t), Box::new(k))) }
 			o:@ _ "." i:id() { Expr::LExpr(LExpr::Prop(Box::new(o), i)) }
 			f:@ ___ "(" _ a:(expr() ** (_ "," _)) _ ("," _)? ")" { Expr::Call(Box::new(f), a) }
 			--
 			e:pexpr() { e }
-			f:(quiet!{"fn" wb() _ f:fn_def() {f}} / expected!("function")) { f }
-			e:(quiet!{"(" _ e:(expr() ** (_ "," _)) _ ("," _)? ")" {e}} / expected!("tuple")) { Expr::Tuple(e) }
-			e:(quiet!{"[" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" {e}} / expected!("list")) { Expr::List(e) }
-			(quiet!{"[" _ "=" _ "]"} / expected!("map")) { Expr::Map(vec![]) } // Empty map [=]
-			e:(quiet!{"[" _ e:(map_item() ** (_ "," _)) _ ("," _)? "]" {e}} / expected!("map")) { Expr::Map(e) }
-			i:(quiet!{"{" _ i:(object_item() ** (_ "," _)) _ ("," _)? "}" {i}} / expected!("object")) { Expr::Object(i) }
+			f:("fn" wb() _ f:fn_def() {f}) { f }
+			e:("(" _ e:(expr() ** (_ "," _)) _ ("," _)? ")" {e}) { Expr::Tuple(e) }
+			e:("[" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" {e}) { Expr::List(e) }
+			("[" _ "=" _ "]") { Expr::Map(vec![]) } // Empty map [=]
+			e:("[" _ e:(map_item() ** (_ "," _)) _ ("," _)? "]" {e}) { Expr::Map(e) }
+			i:("{" _ i:(object_item() ** (_ "," _)) _ ("," _)? "}" {i}) { Expr::Object(i) }
 			b:boolean() wb() { Expr::Primitive(Primitive::Bool(b)) }
 			"nil" wb() { Expr::Primitive(Primitive::Nil) }
 			s:string() { Expr::Primitive(Primitive::String(s.into_boxed_str())) }
@@ -129,7 +129,7 @@ peg::parser! {
 			= quiet!{
 				  "and" { BinaryOp::And }
 				/ "or" { BinaryOp::Or }
-			} / expected!("boolean operator")
+			} / expected!("boolean op")
 		rule comp_op() -> BinaryOp
 			= quiet!{
 				  "<=" { BinaryOp::LessEq }
@@ -138,19 +138,19 @@ peg::parser! {
 				/ ">"  { BinaryOp::Greater }
 				/ "==" { BinaryOp::Eq }
 				/ "!=" { BinaryOp::NotEq }
-			} / expected!("comparison operator")
+			} / expected!("comparison op")
 		rule arith_op1() -> BinaryOp
 			= quiet!{
 				  "+" { BinaryOp::Plus }
 				/ "-" { BinaryOp::Minus }
-			} / expected!("arithmetic operator")
+			} / expected!("arithmetic op")
 		rule arith_op2() -> BinaryOp
 			= quiet!{
 				  "*" { BinaryOp::Times }
 				/ "//" { BinaryOp::IntDivides }
 				/ "/" { BinaryOp::Divides }
 				/ "%" { BinaryOp::Modulo }
-			} / expected!("arithmetic operator")
+			} / expected!("arithmetic op")
 		rule boolean() -> bool = quiet!{"true" { true } / "false" { false }} / expected!("boolean")
 			
 		rule map_item() -> (Expr, Expr)
