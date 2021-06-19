@@ -39,7 +39,7 @@ for(n in range(100))
 	if(res == "")
 		res += repr(n)
 	end
-	writeln(res)
+	term.writeln(res)
 end
 ```
 
@@ -67,7 +67,7 @@ let quicksort(l)
 end
 
 let l = [5, 7, 8, 10, 1, 2]
-log(quicksort(l))
+term.log(quicksort(l))
 ```
 
 **Struct demo:**
@@ -77,13 +77,13 @@ let Person(name, age)
 		name = name,
 		age = age,
 		talk()
-			writeln("What up, I'm " + self.name + ", I'm " + repr(self.age))
+			term.writeln("What up, I'm " + self.name + ", I'm " + repr(self.age))
 		end,
 		grow_up()
 			self.age = self.age + 1
 		end,
 	}
-	return self
+	ret self
 end
 
 let me = Person("Jared", 19)
