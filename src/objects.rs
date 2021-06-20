@@ -69,7 +69,7 @@ impl GcRef<dyn ImmObject> {
 	}
 	
 	pub fn downcast<T: ImmObject>(&self) -> Option<GcRef<T>> {
-		if self.as_any().is::<T>() {
+		if self.is::<T>() {
 			unsafe { Some(self.cast::<T>()) }
 		} else {
 			None
@@ -82,7 +82,7 @@ impl GcCell<dyn MutObject> {
 	}
 	
 	pub fn downcast<T: MutObject>(&self) -> Option<GcCell<T>> {
-		if self.borrow().as_any().is::<T>() {
+		if self.is::<T>() {
 			unsafe { Some(self.cast::<RefCell<T>>()) }
 		} else {
 			None
