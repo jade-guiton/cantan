@@ -570,7 +570,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("filter", seq_filter),
 		("to_tuple", list_to_tuple),
 	]),
-	(Type::Map, vec![
+	(Type::Object(Map::DYN_TYPE), vec![
 		("contains", map_contains as NativeFn),
 		("remove", map_remove),
 		("size", map_size),
@@ -602,6 +602,6 @@ pub fn create(globals: &mut HashMap<String, Value>, gc: &mut GcHeap) {
 		for (name, func) in methods {
 			map.insert(name.clone(), Value::from_native_func(gc, func, None));
 		}
-		globals.insert(name.clone(), Value::Struct(gc.add_cell(map)));
+		globals.insert(name.clone(), gc.add_mut(map));
 	}
 }

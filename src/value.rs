@@ -1,8 +1,6 @@
 use std::hash::{Hash, Hasher};
 use std::convert::TryFrom;
-use std::collections::HashMap;
 use std::cmp::Ordering;
-use std::fmt::Write;
 
 use ordered_float::NotNan;
 
@@ -24,7 +22,6 @@ pub enum Value {
 	ImmObject(GcRef<dyn ImmObject>),
 	MutObject(GcCell<dyn MutObject>),
 	
-	Struct(GcCell<HashMap<String, Value>>),
 	Function(GcRef<Function>),
 	NativeFunction(GcRef<NativeFunctionWrapper>),
 	Iterator(GcCell<dyn NativeIterator>),
@@ -70,7 +67,6 @@ impl Value {
 			Value::ImmObject(o) => Type::Object(o.get_type()),
 			Value::MutObject(o) => Type::Object(o.borrow().get_type()),
 			
-			Value::Struct(_) => Type::Struct,
 			Value::Function(_) => Type::Function,
 			Value::NativeFunction(_) => Type::Function,
 			Value::Iterator(_) => Type::Iterator,
@@ -93,7 +89,6 @@ impl Value {
 					Some(GcSequence::List(list))
 				} else { None }
 			},
-			
 			_ => None,
 		};
 		opt.ok_or_else(|| expected_types("sequence type", self))
@@ -142,13 +137,6 @@ impl Value {
 			
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.struct_eq(o2.as_object()),
 			(Value::MutObject(o1), Value::MutObject(o2)) => o1.borrow().struct_eq(o2.borrow().as_object()),
-			
-			(Value::Struct(o1), Value::Struct(o2)) => {
-				let (o1, o2) = (o1.borrow(), o2.borrow());
-				if o1.len() == o2.len() {
-					o1.iter().all(|(k,v)| o2.get(k).map_or(false, |v2| v.struct_eq(v2)))
-				} else { false }
-			},
 			_ => false,
 		}
 	}
@@ -168,7 +156,6 @@ impl Value {
 			
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.cmp(o2.as_object()),
 			(Value::MutObject(o1), Value::MutObject(o2)) => o1.borrow().cmp(o2.borrow().as_object()),
-			
 			_ => None,
 		};
 		res.ok_or_else(|| format!("Cannot compare: '{}', '{}'", self.repr(), other.repr()))
@@ -201,19 +188,6 @@ impl Value {
 			Value::ImmObject(o) => o.repr(),
 			Value::MutObject(o) => o.borrow().repr(),
 			
-			Value::Struct(obj) => {
-				let obj = obj.borrow();
-				let mut buf = String::new();
-				write!(buf, "{{").unwrap();
-				for (idx, (key, val)) in obj.iter().enumerate() {
-					write!(buf, "{}={}", key, val.repr()).unwrap();
-					if idx < obj.len() - 1 {
-						write!(buf, ", ").unwrap();
-					}
-				}
-				write!(buf, "}}").unwrap();
-				buf
-			},
 			Value::Function(func) =>
 				format!("<fn 0x{:x}>", func.get_addr() as usize),
 			Value::NativeFunction(func) =>
@@ -244,41 +218,22 @@ impl Value {
 	}
 	
 	pub fn prop(&self, prop: &str, gc: &mut GcHeap) -> Result<Value, String> {
-		let res = match self {
-			Value::MutObject(o) => o.borrow().prop(prop, gc),
-			
-			Value::Struct(obj) => {
-				Some(obj.borrow().get(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?.clone())
-			},
-			_ => None,
-		};
+		let res = if let Value::MutObject(o) = self {
+			o.borrow().prop(prop, gc)
+		} else { None };
 		let res = res.or_else(|| {
 			crate::stdlib::METHODS.get(&self.get_type())
 				.and_then(|mets| mets.get(prop))
 				.map(|met| Value::from_native_func(gc, met, Some(self.clone())))
 		});
-		res.ok_or_else(|| format!("Cannot get prop '{}' of {}", prop, self.get_type()))
+		res.ok_or_else(|| format!("Cannot get prop '{}' of {}", prop, self.repr()))
 	}
 	
 	pub fn set_prop(&self, prop: &str, val: Value) -> Result<(), String> {
-		let res = match self {
-			Value::MutObject(o) => {
-				if let Some(res) = o.borrow_mut().set_prop(prop, val) {
-					Some(res?)
-				} else {
-					None
-				}
-			},
-			
-			Value::Struct(obj) => {
-				let mut obj = obj.borrow_mut();
-				let slot = obj.get_mut(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?;
-				*slot = val;
-				Some(())
-			},
-			_ => None,
-		};
-		res.ok_or_else(|| format!("Cannot get prop of {}", self.get_type()))
+		let res = if let Value::MutObject(o) = self {
+			o.borrow_mut().set_prop(prop, val)
+		} else { None };
+		res.ok_or_else(|| format!("Cannot set prop '{}' of {}", prop, self.repr()))
 	}
 	
 	pub fn make_iter(&self, gc: &mut GcHeap) -> Result<Option<Value>, String> {
@@ -330,7 +285,6 @@ impl PartialEq for Value {
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.struct_eq(o2.as_object()),
 			(Value::MutObject(o1), Value::MutObject(o2)) => o1.get_addr() == o2.get_addr(),
 			
-			(Value::Struct(o1), Value::Struct(o2)) => o1.get_addr() == o2.get_addr(),
 			(Value::Function(f1), Value::Function(f2)) => f1.get_addr() == f2.get_addr(),
 			(Value::NativeFunction(f1), Value::NativeFunction(f2)) => f1.get_addr() == f2.get_addr(),
 			(Value::Iterator(i1), Value::Iterator(i2)) => i1.get_addr() == i2.get_addr(),
@@ -353,7 +307,6 @@ impl Hash for Value {
 			Value::ImmObject(o) => o.imm_hash().hash(state),
 			Value::MutObject(o) => o.get_addr().hash(state),
 			
-			Value::Struct(obj) => obj.get_addr().hash(state),
 			Value::Function(func) => func.get_addr().hash(state),
 			Value::NativeFunction(func) => func.get_addr().hash(state),
 			Value::Iterator(iter) => iter.get_addr().hash(state),

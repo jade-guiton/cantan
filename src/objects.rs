@@ -56,7 +56,7 @@ pub trait MutObject: Object + AsObject {
 	fn set_index(&mut self, _idx: Value, _val: Value) -> Option<Result<(), String>> {
 		None
 	}
-	fn set_prop(&mut self, _prop: &str, _val: Value) -> Option<Result<(), String>> {
+	fn set_prop(&mut self, _prop: &str, _val: Value) -> Option<()> {
 		None
 	}
 }
@@ -240,6 +240,43 @@ impl MutObject for Map {
 	fn set_index(&mut self, idx: Value, val: Value) -> Option<Result<(), String>> {
 		self.insert(idx, val);
 		Some(Ok(()))
+	}
+}
+
+
+pub type Struct = HashMap<String, Value>;
+register_dyn_type!("struct", Struct);
+
+impl Object for Struct {
+	fn struct_eq(&self, other: &dyn Object) -> bool {
+		if let Some(other) = other.downcast::<Struct>() {
+			if self.len() == other.len() {
+				self.iter().all(|(k,v)| other.get(k).map_or(false, |v2| v.struct_eq(v2)))
+			} else { false }
+		} else { false }
+	}
+	fn repr(&self) -> String {
+		let mut buf = String::new();
+		write!(buf, "{{").unwrap();
+		for (idx, (key, val)) in self.iter().enumerate() {
+			write!(buf, "{}={}", key, val.repr()).unwrap();
+			if idx < self.len() - 1 {
+				write!(buf, ", ").unwrap();
+			}
+		}
+		write!(buf, "}}").unwrap();
+		buf
+	}
+	fn prop(&self, prop: &str, _gc: &mut GcHeap) -> Option<Value> {
+		self.get(prop).cloned()
+	}
+}
+impl MutObject for Struct {
+	fn set_prop(&mut self, prop: &str, val: Value) -> Option<()> {
+		self.get_mut(prop)
+			.map(|slot| {
+				*slot = val;
+			})
 	}
 }
 

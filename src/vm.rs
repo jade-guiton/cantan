@@ -418,7 +418,7 @@ impl VmState {
 				let mut values = self.pop_n(class.len())?;
 				let st: HashMap<String, Value> = class.iter().cloned()
 					.zip(values.drain(..)).collect();
-				self.push(Value::Struct(gc.add_cell(st)));
+				self.push(gc.add_mut(st));
 			},
 			Instr::Binary(op) => {
 				let b = self.pop()?;
