@@ -3,7 +3,6 @@ use std::convert::TryFrom;
 use std::collections::HashMap;
 use std::cmp::Ordering;
 use std::fmt::Write;
-use std::ops::Deref;
 
 use ordered_float::NotNan;
 
@@ -25,7 +24,6 @@ pub enum Value {
 	ImmObject(GcRef<dyn ImmObject>),
 	MutObject(GcCell<dyn MutObject>),
 	
-	List(GcCell<Vec<Value>>),
 	Map(GcCell<HashMap<Value, Value>>),
 	Struct(GcCell<HashMap<String, Value>>),
 	Function(GcRef<Function>),
@@ -73,7 +71,6 @@ impl Value {
 			Value::ImmObject(o) => Type::Object(o.get_type()),
 			Value::MutObject(o) => Type::Object(o.borrow().get_type()),
 			
-			Value::List(_) => Type::List,
 			Value::Map(_) => Type::Map,
 			Value::Struct(_) => Type::Struct,
 			Value::Function(_) => Type::Function,
@@ -84,7 +81,6 @@ impl Value {
 	
 	get_prim!(get_bool, bool, Bool);
 	get_prim!(get_int, i32, Int);
-	get_prim!(get_list, GcCell<Vec<Value>>, List);
 	get_prim!(get_iter, GcCell<dyn NativeIterator>, Iterator);
 	get_prim!(get_map, GcCell<HashMap<Value, Value>>, Map);
 	
@@ -150,12 +146,6 @@ impl Value {
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.struct_eq(o2.as_object()),
 			(Value::MutObject(o1), Value::MutObject(o2)) => o1.borrow().struct_eq(o2.borrow().as_object()),
 			
-			(Value::List(l1), Value::List(l2)) => {
-				let (l1, l2) = (l1.borrow(), l2.borrow());
-				if l1.len() == l2.len() {
-					l1.iter().zip(l2.deref()).all(|(a,b)| a.struct_eq(b))
-				} else { false }
-			},
 			(Value::Map(m1), Value::Map(m2)) => { // Memory equality for keys, structural for values
 				let (m1, m2) = (m1.borrow(), m2.borrow());
 				if m1.len() == m2.len() {
@@ -220,19 +210,6 @@ impl Value {
 			Value::ImmObject(o) => o.repr(),
 			Value::MutObject(o) => o.borrow().repr(),
 			
-			Value::List(list) => {
-				let list = list.borrow();
-				let mut buf = String::new();
-				write!(buf, "[").unwrap();
-				for (idx, val) in list.iter().enumerate() {
-					write!(buf, "{}", val.repr()).unwrap();
-					if idx < list.len() - 1 {
-						write!(buf, ", ").unwrap();
-					}
-				}
-				write!(buf, "]").unwrap();
-				buf
-			},
 			Value::Map(map) => {
 				let map = map.borrow();
 				let mut buf = String::new();
@@ -277,12 +254,6 @@ impl Value {
 			Value::ImmObject(o) => o.index(idx),
 			Value::MutObject(o) => o.borrow().index(idx),
 			
-			Value::List(list) => {
-				let list = list.borrow();
-				let idx = idx.get_int()?;
-				Some(usize::try_from(idx).ok().and_then(|idx| list.get(idx)).cloned()
-					.ok_or_else(|| format!("Trying to index list of length {} with: {}", list.len(), idx)))
-			},
 			Value::Map(map) => {
 				Some(Ok(map.borrow().get(idx).ok_or_else(|| format!("Map does not contain key: {}", idx.repr()))?.clone()))
 			},
@@ -301,15 +272,6 @@ impl Value {
 				}
 			},
 			
-			Value::List(list) => {
-				let mut list = list.borrow_mut();
-				let idx = idx.get_int()?;
-				let len = list.len();
-				let slot = usize::try_from(idx).ok().and_then(|idx| list.get_mut(idx))
-					.ok_or_else(|| format!("Trying to index list of length {} with: {}", len, idx))?;
-				*slot = val;
-				Some(())
-			},
 			Value::Map(map) => {
 				let mut map = map.borrow_mut();
 				map.insert(idx, val);
@@ -407,7 +369,6 @@ impl PartialEq for Value {
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.struct_eq(o2.as_object()),
 			(Value::MutObject(o1), Value::MutObject(o2)) => o1.get_addr() == o2.get_addr(),
 			
-			(Value::List(l1), Value::List(l2)) => l1.get_addr() == l2.get_addr(),
 			(Value::Map(m1), Value::Map(m2)) => m1.get_addr() == m2.get_addr(),
 			(Value::Struct(o1), Value::Struct(o2)) => o1.get_addr() == o2.get_addr(),
 			(Value::Function(f1), Value::Function(f2)) => f1.get_addr() == f2.get_addr(),
@@ -432,7 +393,6 @@ impl Hash for Value {
 			Value::ImmObject(o) => o.imm_hash().hash(state),
 			Value::MutObject(o) => o.get_addr().hash(state),
 			
-			Value::List(list) => list.get_addr().hash(state),
 			Value::Map(map) => map.get_addr().hash(state),
 			Value::Struct(obj) => obj.get_addr().hash(state),
 			Value::Function(func) => func.get_addr().hash(state),

@@ -247,16 +247,16 @@ native_func!(tuple_to_list, vm, args, {
 
 native_func!(list_push, args, {
 	check_arg_cnt(1, args.len() - 1)?;
-	let list = args[0].get_list()?;
-	list.borrow_mut().push(args[1].clone());
+	let list = args[0].get_mut::<List>()?;
+	list.borrow_mut().0.push(args[1].clone());
 	Ok(Value::Nil)
 });
 
 native_func!(list_pop, args, {
 	check_arg_cnt(0, args.len() - 1)?;
-	let list = args[0].get_list()?;
+	let list = args[0].get_mut::<List>()?;
 	let mut list = list.borrow_mut();
-	if let Some(val) = list.pop() {
+	if let Some(val) = list.0.pop() {
 		Ok(val)
 	} else {
 		Err(String::from("Cannot pop empty list"))
@@ -265,12 +265,12 @@ native_func!(list_pop, args, {
 
 native_func!(list_insert, args, {
 	check_arg_cnt(2, args.len() - 1)?;
-	let list = args[0].get_list()?;
-	let len = list.borrow().len();
+	let list = args[0].get_mut::<List>()?;
+	let len = list.borrow().0.len();
 	let idx = args[2].get_int()?;
 	if let Some(idx) = usize::try_from(idx).ok()
 			.filter(|idx| *idx <= len) {
-		list.borrow_mut().insert(idx, args[1].clone());
+		list.borrow_mut().0.insert(idx, args[1].clone());
 		Ok(Value::Nil)
 	} else {
 		Err(format!("Cannot insert at position {} in list of length {}", idx, len))
@@ -279,12 +279,12 @@ native_func!(list_insert, args, {
 
 native_func!(list_remove, args, {
 	check_arg_cnt(1, args.len() - 1)?;
-	let list = args[0].get_list()?;
-	let len = list.borrow().len();
+	let list = args[0].get_mut::<List>()?;
+	let len = list.borrow().0.len();
 	let idx = args[1].get_int()?;
 	if let Some(idx) = usize::try_from(idx).ok()
 			.filter(|idx| *idx < len) {
-		list.borrow_mut().remove(idx);
+		list.borrow_mut().0.remove(idx);
 		Ok(Value::Nil)
 	} else {
 		Err(format!("Cannot remove position {} in list of length {}", idx, len))
@@ -293,9 +293,9 @@ native_func!(list_remove, args, {
 
 native_func!(list_to_tuple, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
-	let list = args[0].get_list()?;
+	let list = args[0].get_mut::<List>()?;
 	let list = list.borrow();
-	Ok(vm.gc.add_imm(Tuple(list.deref().clone())))
+	Ok(vm.gc.add_imm(Tuple(list.0.clone())))
 });
 
 native_func!(map_contains, args, {

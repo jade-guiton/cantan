@@ -439,12 +439,12 @@ impl VmState {
 						let b = b.get_string()?;
 						self.push(Value::String((a + &b).into_boxed_str()));
 					},
-					BinaryOp::Plus if a.get_type() == Type::List => {
-						let a = a.get_list().unwrap();
-						let mut a = a.borrow().deref().clone();
-						let b = b.get_list()?;
-						a.extend_from_slice(b.borrow().deref());
-						self.push(Value::List(gc.add_cell(a)));
+					BinaryOp::Plus if a.is::<List>() => {
+						let a = a.get_mut::<List>().unwrap();
+						let mut a = a.borrow().0.clone();
+						let b = b.get_mut::<List>().unwrap();
+						a.extend_from_slice(b.borrow().0.deref());
+						self.push(gc.add_mut(List(a)));
 					},
 					BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Times | BinaryOp::Modulo
 							if a.get_type() == Type::Int && b.get_type() == Type::Int => {

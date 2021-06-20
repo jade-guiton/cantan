@@ -86,7 +86,7 @@ impl<T: 'static + Eq + Hash + DynTyped> ImmData for T {
 pub enum Type {
 	Int, Float, String, Bool, Nil,
 	Object(DynType),
-	List, Map, Struct, Function, Iterator,
+	Map, Struct, Function, Iterator,
 }
 
 impl fmt::Display for Type {
@@ -100,7 +100,6 @@ impl fmt::Display for Type {
 			
 			Type::Object(t) => t.type_name,
 			
-			Type::List => "list",
 			Type::Map => "map",
 			Type::Struct => "struct",
 			Type::Function => "function",

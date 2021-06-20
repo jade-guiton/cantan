@@ -31,7 +31,7 @@ pub trait Object: Trace + DynTyped {
 		None
 	}
 	fn repr(&self) -> String {
-		format!("{}(0x{:x})", self.get_type().type_name, self.get_address())
+		format!("<{} 0x{:x}>", self.get_type().type_name, self.get_address())
 	}
 	fn index(&self, _idx: &Value) -> Option<Result<Value, String>> {
 		None
@@ -63,11 +63,18 @@ pub trait MutObject: Object + AsObject {
 pub trait ImmObject: Object + AsObject + ImmData {}
 
 
+impl dyn Object {
+	pub fn is<T: Object>(&self) -> bool {
+		self.as_any().is::<T>()
+	}
+	pub fn downcast<T: Object>(&self) -> Option<&T> {
+		self.as_any().downcast_ref::<T>()
+	}
+}
 impl GcRef<dyn ImmObject> {
 	pub fn is<T: Object>(&self) -> bool {
 		self.as_any().is::<T>()
 	}
-	
 	pub fn downcast<T: ImmObject>(&self) -> Option<GcRef<T>> {
 		if self.is::<T>() {
 			unsafe { Some(self.cast::<T>()) }
@@ -80,7 +87,6 @@ impl GcCell<dyn MutObject> {
 	pub fn is<T: Object>(&self) -> bool {
 		self.borrow().as_any().is::<T>()
 	}
-	
 	pub fn downcast<T: MutObject>(&self) -> Option<GcCell<T>> {
 		if self.is::<T>() {
 			unsafe { Some(self.cast::<RefCell<T>>()) }
@@ -98,15 +104,14 @@ register_dyn_type!("tuple", Tuple);
 
 impl Object for Tuple {
 	fn struct_eq(&self, other: &dyn Object) -> bool {
-		if let Some(other) = other.as_any().downcast_ref::<Tuple>() {
+		if let Some(other) = other.downcast::<Tuple>() {
 			if self.0.len() == other.0.len() {
 				self.0.iter().zip(other.0.deref()).all(|(a,b)| a.struct_eq(b))
 			} else { false }
 		} else { false }
 	}
-	
 	fn cmp(&self, other: &dyn Object) -> Option<Ordering> {
-		let other = other.as_any().downcast_ref::<Tuple>()?;
+		let other = other.downcast::<Tuple>()?;
 		if self.0.len() != other.0.len() { return None; }
 		let o = self.0.iter().zip(other.0.iter()).find_map(|(v1,v2)| {
 			let res = v1.cmp(v2);
@@ -118,7 +123,6 @@ impl Object for Tuple {
 		});
 		o.unwrap_or(Ok(Ordering::Equal)).ok()
 	}
-	
 	fn repr(&self) -> String {
 		let mut buf = String::new();
 		write!(buf, "(").unwrap();
@@ -134,14 +138,13 @@ impl Object for Tuple {
 		write!(buf, ")").unwrap();
 		buf
 	}
-	
 	fn index(&self, idx: &Value) -> Option<Result<Value, String>> {
-		let idx = match idx.get_int() {
-			Ok(idx) => idx,
-			Err(err) => return Some(Err(err)),
-		};
-		Some(usize::try_from(idx).ok().and_then(|idx| self.0.get(idx)).cloned()
-			.ok_or_else(|| format!("Trying to index {}-tuple with: {}", self.0.len(), idx)))
+		Some({
+			idx.get_int().and_then(|idx| {
+				usize::try_from(idx).ok().and_then(|idx| self.0.get(idx)).cloned()
+					.ok_or_else(|| format!("Trying to index {}-tuple with: {}", self.0.len(), idx))
+			})
+		})
 	}
 }
 impl ImmObject for Tuple {}
@@ -151,8 +154,49 @@ impl ImmObject for Tuple {}
 pub struct List(pub Vec<Value>);
 register_dyn_type!("list", List);
 
-impl Object for List {}
-impl MutObject for List {}
+impl Object for List {
+	fn struct_eq(&self, other: &dyn Object) -> bool {
+		if let Some(other) = other.downcast::<List>() {
+			if self.0.len() == other.0.len() {
+				self.0.iter().zip(other.0.deref())
+					.all(|(a,b)| a.struct_eq(b))
+			} else { false }
+		} else { false }
+	}
+	fn repr(&self) -> String {
+		let mut buf = String::new();
+		write!(buf, "[").unwrap();
+		for (idx, val) in self.0.iter().enumerate() {
+			write!(buf, "{}", val.repr()).unwrap();
+			if idx < self.0.len() - 1 {
+				write!(buf, ", ").unwrap();
+			}
+		}
+		write!(buf, "]").unwrap();
+		buf
+	}
+	fn index(&self, idx: &Value) -> Option<Result<Value, String>> {
+		Some({
+			idx.get_int().and_then(|idx| {
+				usize::try_from(idx).ok().and_then(|idx| self.0.get(idx)).cloned()
+					.ok_or_else(|| format!("Trying to index list of length {} with: {}", self.0.len(), idx))
+			})
+		})
+	}
+}
+impl MutObject for List {
+	fn set_index(&mut self, idx: Value, val: Value) -> Option<Result<(), String>> {
+		Some({
+			idx.get_int().and_then(|idx| {
+				let len = self.0.len();
+				let slot = usize::try_from(idx).ok().and_then(|idx| self.0.get_mut(idx))
+					.ok_or_else(|| format!("Trying to index list of length {} with: {}", len, idx))?;
+				*slot = val;
+				Ok(())
+			})
+		})
+	}
+}
 
 
 #[derive(Trace)]
