@@ -14,6 +14,7 @@ mod cli;
 mod types;
 mod gc;
 mod grammar;
+mod objects;
 mod repl;
 mod stdlib;
 mod util;

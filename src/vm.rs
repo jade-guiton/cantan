@@ -7,6 +7,7 @@ use std::rc::Rc;
 use crate::ast::{UnaryOp, BinaryOp};
 use crate::chunk::*;
 use crate::types::*;
+use crate::objects::*;
 use crate::value::*;
 use crate::gc::{Trace, GcRef, GcCell, GcHeap};
 

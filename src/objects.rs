@@ -1,0 +1,235 @@
+use std::cell::Cell;
+use std::cmp::Ordering;
+use std::convert::TryFrom;
+use std::fmt::{self, Write};
+use std::ops::Deref;
+use std::rc::Rc;
+
+use crate::chunk::CompiledFunction;
+use crate::gc::{GcHeap, GcRef, GcCell, Trace, TraceCtx};
+use crate::types::{DynType, DynTyped, ImmData};
+use crate::value::Value;
+use crate::vm::VmArena;
+use crate::register_dyn_type;
+
+
+pub trait Object: Trace + DynTyped {
+	fn get_address(&self) -> usize {
+		self as *const Self as *const () as usize
+	}
+	fn get_sequence<'a>(&'a self) -> Option<SmartRef<'a, [Value]>> {
+		None
+	}
+	fn get_callable(&self) -> Option<Callable> {
+		None
+	}
+	fn struct_eq(&self, other: &dyn Object) -> bool {
+		self.get_address() == other.get_address()
+	}
+	fn cmp(&self, _other: &dyn Object) -> Option<Ordering> {
+		None
+	}
+	fn repr(&self) -> String {
+		format!("{}(0x{:x})", self.get_type().type_name, self.get_address())
+	}
+	fn index(&self, _idx: &Value) -> Option<Result<Value, String>> {
+		None
+	}
+	fn prop(&self, _prop: &str, _gc: &mut GcHeap) -> Option<Value> {
+		None
+	}
+	fn make_iter(&self, _gc: &mut GcHeap) -> Option<Option<Value>> {
+		None
+	}
+}
+
+pub trait AsObject {
+	fn as_object(&self) -> &dyn Object;
+}
+impl<T: Object> AsObject for T {
+	fn as_object(&self) -> &dyn Object {
+		self
+	}
+}
+
+pub trait MutObject: Object + AsObject {
+	fn set_index(&mut self, _idx: Value, _val: Value) -> Option<Result<(), String>> {
+		None
+	}
+	fn set_prop(&mut self, _prop: &str, _val: Value) -> Option<Result<(), String>> {
+		None
+	}
+}
+
+pub trait ImmObject: Object + AsObject + ImmData {}
+
+#[derive(Trace, PartialEq, Eq, Hash)]
+pub struct Tuple(pub Vec<Value>);
+register_dyn_type!("tuple", Tuple);
+
+impl Object for Tuple {
+	fn repr(&self) -> String {
+		let mut buf = String::new();
+		write!(buf, "(").unwrap();
+		for (idx, val) in self.0.iter().enumerate() {
+			write!(buf, "{}", val.repr()).unwrap();
+			if idx < self.0.len() - 1 {
+				write!(buf, ", ").unwrap();
+			}
+		}
+		if self.0.len() == 1 {
+			write!(buf, ",").unwrap();
+		}
+		write!(buf, ")").unwrap();
+		buf
+	}
+	
+	fn index(&self, idx: &Value) -> Option<Result<Value, String>> {
+		let idx = match idx.get_int() {
+			Ok(idx) => idx,
+			Err(err) => return Some(Err(err)),
+		};
+		Some(usize::try_from(idx).ok().and_then(|idx| self.0.get(idx)).cloned()
+			.ok_or_else(|| format!("Trying to index {}-tuple with: {}", self.0.len(), idx)))
+	}
+}
+impl ImmObject for Tuple {}
+
+
+#[derive(Trace, PartialEq, Eq, Hash)]
+pub struct List(pub Vec<Value>);
+register_dyn_type!("list", List);
+
+impl Object for List {}
+impl MutObject for List {}
+
+
+#[derive(Trace)]
+pub enum Upvalue {
+	Open(usize),
+	Closed(Value),
+}
+
+#[derive(Trace)]
+pub struct Function {
+	pub chunk: Rc<CompiledFunction>,
+	pub upvalues: Vec<GcCell<Upvalue>>,
+}
+
+impl Function {
+	pub fn main(chunk: Rc<CompiledFunction>) -> Self {
+		Function { chunk, upvalues: vec![] }
+	}
+}
+
+pub trait NativeFunction = Fn(&mut VmArena, Vec<Value>) -> Result<Value, String> + 'static;
+
+pub struct NativeFunctionWrapper {
+	pub func: Box<dyn NativeFunction>,
+	pub this: Option<Value>,
+}
+
+impl NativeFunctionWrapper {
+	pub fn new(func: impl NativeFunction, this: Option<Value>) -> Self {
+		NativeFunctionWrapper { func: Box::new(func), this }
+	}
+	
+	pub fn call(&self, vm: &mut VmArena, mut args: Vec<Value>) -> Result<Value, String> {
+		if let Some(this) = &self.this {
+			args.insert(0, this.clone());
+		}
+		(self.func)(vm, args)
+	}
+}
+
+impl fmt::Debug for NativeFunctionWrapper {
+	fn fmt(&self, fmt: &mut fmt::Formatter) -> fmt::Result {
+		write!(fmt, "NativeFunctionWrapper @ 0x{:x}", self.func.as_ref() as *const _ as *const () as usize)
+	}
+}
+
+// Not sure if this is safe?
+// I don't think a NativeFunction can "contain" a GcRef, since it is required
+// to last for a 'static lifetime, but I'm not 100% sure.
+unsafe impl Trace for NativeFunctionWrapper {
+	unsafe fn trace(&self, ctx: TraceCtx) {
+		if let Some(this) = &self.this {
+			this.trace(ctx);
+		}
+	}
+}
+
+pub trait NativeIterator: Trace {
+	fn next(&mut self, vm: &mut VmArena) -> Result<Option<Value>, String>;
+}
+
+pub enum SmartRef<'a, T: ?Sized> {
+	Static(&'a T),
+	Dynamic(std::cell::Ref<'a, T>),
+}
+
+impl<'a, T: ?Sized> Deref for SmartRef<'a, T> {
+	type Target = T;
+	fn deref(&self) -> &T {
+		match self {
+			SmartRef::Static(r) => r,
+			SmartRef::Dynamic(r) => r.deref(),
+		}
+	}
+}
+
+#[derive(Trace)]
+pub enum GcSequence {
+	Tuple(GcRef<Vec<Value>>),
+	List(GcCell<Vec<Value>>),
+}
+
+impl GcSequence {
+	fn deref(&self) -> SmartRef<[Value]> {
+		match self {
+			GcSequence::Tuple(tuple) => SmartRef::Static(tuple.deref()),
+			GcSequence::List(list) => SmartRef::Dynamic(std::cell::Ref::map(list.borrow(), |v| v.deref())),
+		}
+	}
+}
+
+#[derive(Trace)]
+pub struct SequenceIterator {
+	seq: GcSequence,
+	idx: Cell<usize>,
+}
+
+impl SequenceIterator {
+	pub fn new(seq: GcSequence) -> Self {
+		SequenceIterator {
+			seq,
+			idx: Cell::new(0),
+		}
+	}
+}
+
+impl NativeIterator for SequenceIterator {
+	fn next(&mut self, _vm: &mut VmArena) -> Result<Option<Value>, String> {
+		if let Some(val) = self.seq.deref().get(self.idx.get()).cloned() {
+			self.idx.set(self.idx.get() + 1);
+			Ok(Some(val))
+		} else {
+			Ok(None)
+		}
+	}
+}
+
+#[derive(Trace)]
+pub enum Callable {
+	Function(GcRef<Function>),
+	Native(GcRef<NativeFunctionWrapper>),
+}
+
+impl Callable {
+	pub fn call(&self, vm: &mut VmArena, args: Vec<Value>) -> Result<Value, String> {
+		match self {
+			Callable::Function(func) => vm.call_function(func.clone(), args),
+			Callable::Native(func) => func.call(vm, args),
+		}
+	}
+}

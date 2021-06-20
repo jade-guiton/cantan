@@ -9,7 +9,8 @@ use once_cell::sync::Lazy;
 use unicode_segmentation::{UnicodeSegmentation, GraphemeCursor};
 
 use crate::types::{Type, expected};
-use crate::value::{NativeIterator, Callable, Value};
+use crate::objects::{NativeIterator, Callable};
+use crate::value::Value;
 use crate::gc::{Trace, Primitive, GcCell, GcHeap};
 use crate::vm::VmArena;
 
