@@ -3,12 +3,13 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt::{self, Write};
+use std::hash::{Hash, Hasher};
 use std::ops::Deref;
 use std::rc::Rc;
 
 use crate::chunk::CompiledFunction;
 use crate::gc::{GcHeap, GcRef, GcCell, Trace, TraceCtx};
-use crate::types::{DynType, StaticDynTyped, DynTyped, ImmData};
+use crate::types::{DynType, StaticDynTyped, DynTyped};
 use crate::value::Value;
 use crate::vm::VmArena;
 use crate::register_dyn_type;
@@ -61,7 +62,24 @@ pub trait MutObject: Object + AsObject {
 	}
 }
 
-pub trait ImmObject: Object + AsObject + ImmData {}
+pub trait ImmObject: Object + AsObject {
+	fn imm_hash(&self) -> u64 {
+		self.get_address() as u64
+	}
+}
+
+macro_rules! hashable_imm_type {
+	($type:ty) => {
+		impl ImmObject for $type {
+			fn imm_hash(&self) -> u64 {
+				let mut s = std::collections::hash_map::DefaultHasher::new();
+				self.get_type().type_id.hash(&mut s);
+				self.hash(&mut s);
+				s.finish()
+			}
+		}
+	};
+}
 
 
 impl dyn Object {
@@ -99,7 +117,7 @@ impl GcCell<dyn MutObject> {
 
 
 
-#[derive(Trace, PartialEq, Eq, Hash)]
+#[derive(Trace, Hash)]
 pub struct Tuple(pub Vec<Value>);
 register_dyn_type!("tuple", Tuple);
 
@@ -148,7 +166,7 @@ impl Object for Tuple {
 		})
 	}
 }
-impl ImmObject for Tuple {}
+hashable_imm_type!(Tuple);
 
 
 #[derive(Trace, PartialEq, Eq, Hash)]
@@ -292,6 +310,7 @@ pub struct Function {
 	pub chunk: Rc<CompiledFunction>,
 	pub upvalues: Vec<GcCell<Upvalue>>,
 }
+register_dyn_type!("function", Function);
 
 impl Function {
 	pub fn main(chunk: Rc<CompiledFunction>) -> Self {
@@ -299,12 +318,17 @@ impl Function {
 	}
 }
 
+impl Object for Function {}
+impl ImmObject for Function {}
+
+
 pub trait NativeFunction = Fn(&mut VmArena, Vec<Value>) -> Result<Value, String> + 'static;
 
 pub struct NativeFunctionWrapper {
 	pub func: Box<dyn NativeFunction>,
 	pub this: Option<Value>,
 }
+register_dyn_type!("function", NativeFunctionWrapper);
 
 impl NativeFunctionWrapper {
 	pub fn new(func: impl NativeFunction, this: Option<Value>) -> Self {
@@ -335,6 +359,10 @@ unsafe impl Trace for NativeFunctionWrapper {
 		}
 	}
 }
+
+impl Object for NativeFunctionWrapper {}
+impl ImmObject for NativeFunctionWrapper {}
+
 
 pub trait NativeIterator: Trace {
 	fn next(&mut self, vm: &mut VmArena) -> Result<Option<Value>, String>;

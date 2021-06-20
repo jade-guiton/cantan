@@ -1,4 +1,4 @@
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
 use std::any::Any;
 use std::fmt;
 
@@ -59,34 +59,11 @@ macro_rules! register_dyn_type {
 }
 
 
-// Trait allowing use of Eq and Hash on dynamically typed objects
-pub trait ImmData: DynTyped {
-	fn imm_eq(&self, other: &dyn AsAny) -> bool;
-	fn imm_hash(&self) -> u64;
-}
-
-impl<T: 'static + Eq + Hash + DynTyped> ImmData for T {
-	fn imm_eq(&self, other: &dyn AsAny) -> bool {
-		let other_any = other.as_any();
-		if !other_any.is::<T>() {
-			return false;
-		}
-		self == other_any.downcast_ref::<T>().unwrap()
-	}
-	fn imm_hash(&self) -> u64 {
-		let mut s = std::collections::hash_map::DefaultHasher::new();
-		self.get_type().type_id.hash(&mut s);
-		self.hash(&mut s);
-		s.finish()
-	}
-}
-
-
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Type {
 	Int, Float, String, Bool, Nil,
 	Object(DynType),
-	Function, Iterator,
+	Iterator,
 }
 
 impl fmt::Display for Type {
@@ -99,7 +76,6 @@ impl fmt::Display for Type {
 			Type::Nil => "nil",
 			
 			Type::Object(t) => t.type_name,
-			Type::Function => "function",
 			Type::Iterator => "iterator",
 		};
 		write!(fmt, "{}", s)

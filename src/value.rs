@@ -22,8 +22,6 @@ pub enum Value {
 	ImmObject(GcRef<dyn ImmObject>),
 	MutObject(GcCell<dyn MutObject>),
 	
-	Function(GcRef<Function>),
-	NativeFunction(GcRef<NativeFunctionWrapper>),
 	Iterator(GcCell<dyn NativeIterator>),
 }
 
@@ -49,7 +47,7 @@ macro_rules! get_prim {
 
 impl Value {
 	pub fn from_native_func(gc: &mut GcHeap, func: impl NativeFunction, this: Option<Value>) -> Self {
-		Value::NativeFunction(gc.add(NativeFunctionWrapper::new(func, this)))
+		gc.add_imm(NativeFunctionWrapper::new(func, this))
 	}
 	
 	pub fn from_native_iter(gc: &mut GcHeap, iter: impl NativeIterator) -> Self {
@@ -67,8 +65,6 @@ impl Value {
 			Value::ImmObject(o) => Type::Object(o.get_type()),
 			Value::MutObject(o) => Type::Object(o.borrow().get_type()),
 			
-			Value::Function(_) => Type::Function,
-			Value::NativeFunction(_) => Type::Function,
 			Value::Iterator(_) => Type::Iterator,
 		}
 	}
@@ -113,14 +109,16 @@ impl Value {
 	}
 	
 	pub fn get_callable(&self) -> Result<Callable, String> {
-		let res = match self {
-			Value::ImmObject(o) => o.get_callable(),
-			
-			Value::Function(f) => Some(Callable::Function(f.clone())),
-			Value::NativeFunction(f) => Some(Callable::Native(f.clone())),
-			_ => None,
-		};
-		res.ok_or_else(|| expected_type(Type::Function, self))
+		let res = if let Value::ImmObject(o) = self {
+			if let Some(f) = o.downcast::<Function>() {
+				Some(Callable::Function(f))
+			} else if let Some(f) = o.downcast::<NativeFunctionWrapper>() {
+				Some(Callable::Native(f))
+			} else {
+				None
+			}
+		} else { None };
+		res.ok_or_else(|| expected_types("function", self))
 	}
 	
 	pub fn struct_eq(&self, other: &Value) -> bool {
@@ -188,10 +186,6 @@ impl Value {
 			Value::ImmObject(o) => o.repr(),
 			Value::MutObject(o) => o.borrow().repr(),
 			
-			Value::Function(func) =>
-				format!("<fn 0x{:x}>", func.get_addr() as usize),
-			Value::NativeFunction(func) =>
-				format!("<fn 0x{:x}>", func.get_addr() as usize),
 			Value::Iterator(iter) =>
 				format!("<iter 0x{:x}>", iter.get_addr() as usize),
 		}
@@ -285,8 +279,6 @@ impl PartialEq for Value {
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.struct_eq(o2.as_object()),
 			(Value::MutObject(o1), Value::MutObject(o2)) => o1.get_addr() == o2.get_addr(),
 			
-			(Value::Function(f1), Value::Function(f2)) => f1.get_addr() == f2.get_addr(),
-			(Value::NativeFunction(f1), Value::NativeFunction(f2)) => f1.get_addr() == f2.get_addr(),
 			(Value::Iterator(i1), Value::Iterator(i2)) => i1.get_addr() == i2.get_addr(),
 			_ => false,
 		}
@@ -307,8 +299,6 @@ impl Hash for Value {
 			Value::ImmObject(o) => o.imm_hash().hash(state),
 			Value::MutObject(o) => o.get_addr().hash(state),
 			
-			Value::Function(func) => func.get_addr().hash(state),
-			Value::NativeFunction(func) => func.get_addr().hash(state),
 			Value::Iterator(iter) => iter.get_addr().hash(state),
 		}
 	}

@@ -369,26 +369,21 @@ impl VmState {
 						},
 					}
 				}
-				let func2 = gc.add(Function { chunk: chunk2, upvalues });
-				self.push(Value::Function(func2));
+				self.push(gc.add_imm(Function { chunk: chunk2, upvalues }));
 			},
 			Instr::Call(arg_cnt) => {
 				let args: Vec<Value> = self.pop_n(arg_cnt as usize)?;
 				let func2 = self.pop()?;
-				match func2 {
-					Value::Function(func2) => {
-						self.call_function(func2, args)?;
-						jumped = true;
-					},
-					Value::NativeFunction(func2) => {
-						self.call_native();
-						return Ok(Some(NativeCall::NativeFunction(NativeCallParams {
-							func: func2, args,
-						})));
-					},
-					_ => {
-						return Err(format!("Cannot call non-function: {}", func2.repr()));
-					}
+				if let Ok(func2) = func2.get_imm::<Function>() {
+					self.call_function(func2, args)?;
+					jumped = true;
+				} else if let Ok(func2) = func2.get_imm::<NativeFunctionWrapper>() {
+					self.call_native();
+					return Ok(Some(NativeCall::NativeFunction(NativeCallParams {
+						func: func2, args,
+					})));
+				} else {
+					return Err(format!("Cannot call non-function: {}", func2.repr()));
 				}
 			},
 			Instr::Return => {
