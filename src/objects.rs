@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt::{self, Write};
 use std::ops::Deref;
@@ -195,6 +196,50 @@ impl MutObject for List {
 				Ok(())
 			})
 		})
+	}
+}
+
+
+pub type Map = HashMap<Value, Value>;
+register_dyn_type!("map", Map);
+
+impl Object for Map {
+	fn struct_eq(&self, other: &dyn Object) -> bool {
+		if let Some(other) = other.downcast::<Map>() {
+			if self.len() == other.len() {
+				self.iter().all(|(k,v)| other.get(k).map_or(false, |v2| v.struct_eq(v2)))
+			} else { false }
+		} else { false }
+	}
+	fn repr(&self) -> String {
+		let mut buf = String::new();
+		write!(buf, "[").unwrap();
+		if self.len() == 0 {
+			write!(buf, "=").unwrap();
+		} else {
+			for (idx, (key, val)) in self.iter().enumerate() {
+				write!(buf, "{}={}", key.repr(), val.repr()).unwrap();
+				if idx < self.len() - 1 {
+					write!(buf, ", ").unwrap();
+				}
+			}
+		}
+		write!(buf, "]").unwrap();
+		buf
+	}
+	fn index(&self, idx: &Value) -> Option<Result<Value, String>> {
+		Some({
+			self.get(idx)
+				.ok_or_else(||
+					format!("Map does not contain key: {}", idx.repr()))
+				.map(|v| v.clone())
+		})
+	}
+}
+impl MutObject for Map {
+	fn set_index(&mut self, idx: Value, val: Value) -> Option<Result<(), String>> {
+		self.insert(idx, val);
+		Some(Ok(()))
 	}
 }
 

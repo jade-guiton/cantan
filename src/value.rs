@@ -24,7 +24,6 @@ pub enum Value {
 	ImmObject(GcRef<dyn ImmObject>),
 	MutObject(GcCell<dyn MutObject>),
 	
-	Map(GcCell<HashMap<Value, Value>>),
 	Struct(GcCell<HashMap<String, Value>>),
 	Function(GcRef<Function>),
 	NativeFunction(GcRef<NativeFunctionWrapper>),
@@ -71,7 +70,6 @@ impl Value {
 			Value::ImmObject(o) => Type::Object(o.get_type()),
 			Value::MutObject(o) => Type::Object(o.borrow().get_type()),
 			
-			Value::Map(_) => Type::Map,
 			Value::Struct(_) => Type::Struct,
 			Value::Function(_) => Type::Function,
 			Value::NativeFunction(_) => Type::Function,
@@ -82,7 +80,6 @@ impl Value {
 	get_prim!(get_bool, bool, Bool);
 	get_prim!(get_int, i32, Int);
 	get_prim!(get_iter, GcCell<dyn NativeIterator>, Iterator);
-	get_prim!(get_map, GcCell<HashMap<Value, Value>>, Map);
 	
 	pub fn get_sequence<'a>(&'a self) -> Result<GcSequence, String> {
 		let opt = match self {
@@ -146,12 +143,6 @@ impl Value {
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.struct_eq(o2.as_object()),
 			(Value::MutObject(o1), Value::MutObject(o2)) => o1.borrow().struct_eq(o2.borrow().as_object()),
 			
-			(Value::Map(m1), Value::Map(m2)) => { // Memory equality for keys, structural for values
-				let (m1, m2) = (m1.borrow(), m2.borrow());
-				if m1.len() == m2.len() {
-					m1.iter().all(|(k,v)| m2.get(k).map_or(false, |v2| v.struct_eq(v2)))
-				} else { false }
-			},
 			(Value::Struct(o1), Value::Struct(o2)) => {
 				let (o1, o2) = (o1.borrow(), o2.borrow());
 				if o1.len() == o2.len() {
@@ -210,23 +201,6 @@ impl Value {
 			Value::ImmObject(o) => o.repr(),
 			Value::MutObject(o) => o.borrow().repr(),
 			
-			Value::Map(map) => {
-				let map = map.borrow();
-				let mut buf = String::new();
-				write!(buf, "[").unwrap();
-				if map.len() == 0 {
-					write!(buf, "=").unwrap();
-				} else {
-					for (idx, (key, val)) in map.iter().enumerate() {
-						write!(buf, "{}={}", key.repr(), val.repr()).unwrap();
-						if idx < map.len() - 1 {
-							write!(buf, ", ").unwrap();
-						}
-					}
-				}
-				write!(buf, "]").unwrap();
-				buf
-			},
 			Value::Struct(obj) => {
 				let obj = obj.borrow();
 				let mut buf = String::new();
@@ -253,32 +227,19 @@ impl Value {
 		let res = match self {
 			Value::ImmObject(o) => o.index(idx),
 			Value::MutObject(o) => o.borrow().index(idx),
-			
-			Value::Map(map) => {
-				Some(Ok(map.borrow().get(idx).ok_or_else(|| format!("Map does not contain key: {}", idx.repr()))?.clone()))
-			},
 			_ => None,
 		};
 		res.ok_or_else(|| format!("Cannot get index from {}", self.get_type())).flatten()
 	}
 	
 	pub fn set_index(&self, idx: Value, val: Value) -> Result<(), String> {
-		let res = match self {
-			Value::MutObject(o) => {
-				if let Some(res) = o.borrow_mut().set_index(idx, val) {
-					Some(res?)
-				} else {
-					None
-				}
-			},
-			
-			Value::Map(map) => {
-				let mut map = map.borrow_mut();
-				map.insert(idx, val);
-				Some(())
-			},
-			_ => None,
-		};
+		let res = if let Value::MutObject(o) = self {
+			if let Some(res) = o.borrow_mut().set_index(idx, val) {
+				Some(res?)
+			} else {
+				None
+			}
+		} else { None };
 		res.ok_or_else(|| format!("Cannot set index in {}", self.get_type()))
 	}
 	
@@ -369,7 +330,6 @@ impl PartialEq for Value {
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.struct_eq(o2.as_object()),
 			(Value::MutObject(o1), Value::MutObject(o2)) => o1.get_addr() == o2.get_addr(),
 			
-			(Value::Map(m1), Value::Map(m2)) => m1.get_addr() == m2.get_addr(),
 			(Value::Struct(o1), Value::Struct(o2)) => o1.get_addr() == o2.get_addr(),
 			(Value::Function(f1), Value::Function(f2)) => f1.get_addr() == f2.get_addr(),
 			(Value::NativeFunction(f1), Value::NativeFunction(f2)) => f1.get_addr() == f2.get_addr(),
@@ -393,7 +353,6 @@ impl Hash for Value {
 			Value::ImmObject(o) => o.imm_hash().hash(state),
 			Value::MutObject(o) => o.get_addr().hash(state),
 			
-			Value::Map(map) => map.get_addr().hash(state),
 			Value::Struct(obj) => obj.get_addr().hash(state),
 			Value::Function(func) => func.get_addr().hash(state),
 			Value::NativeFunction(func) => func.get_addr().hash(state),

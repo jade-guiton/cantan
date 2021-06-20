@@ -411,7 +411,7 @@ impl VmState {
 				let (mut keys, mut values): (Vec<(usize,Value)>,Vec<(usize,Value)>) =
 					values.drain(..).enumerate().partition(|(i,_)| i % 2 == 0);
 				let map: HashMap<Value, Value> = keys.drain(..).map(|(_,v)| v).zip(values.drain(..).map(|(_,v)| v)).collect();
-				self.push(Value::Map(gc.add_cell(map)));
+				self.push(gc.add_mut(map));
 			},
 			Instr::NewStruct(class_idx) => {
 				let class = func.chunk.classes.get(class_idx as usize).ok_or_else(|| String::from("Using undefined struct class"))?;

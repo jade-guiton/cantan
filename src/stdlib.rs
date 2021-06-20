@@ -9,7 +9,7 @@ use once_cell::sync::Lazy;
 use unicode_segmentation::{UnicodeSegmentation, GraphemeCursor};
 
 use crate::types::{Type, StaticDynTyped, expected};
-use crate::objects::{NativeIterator, Callable, Tuple, List};
+use crate::objects::{NativeIterator, Callable, Tuple, List, Map};
 use crate::value::Value;
 use crate::gc::{Trace, Primitive, GcCell, GcHeap};
 use crate::vm::VmArena;
@@ -300,14 +300,14 @@ native_func!(list_to_tuple, vm, args, {
 
 native_func!(map_contains, args, {
 	check_arg_cnt(1, args.len() - 1)?;
-	let map = args[0].get_map()?;
+	let map = args[0].get_mut::<Map>()?;
 	let map = map.borrow();
 	Ok(Value::Bool(map.contains_key(&args[1])))
 });
 
 native_func!(map_remove, args, {
 	check_arg_cnt(1, args.len() - 1)?;
-	let map = args[0].get_map()?;
+	let map = args[0].get_mut::<Map>()?;
 	let mut map = map.borrow_mut();
 	match map.remove(&args[1]) {
 		Some(val) => Ok(val),
@@ -317,14 +317,14 @@ native_func!(map_remove, args, {
 
 native_func!(map_size, args, {
 	check_arg_cnt(0, args.len() - 1)?;
-	let map = args[0].get_map()?;
+	let map = args[0].get_mut::<Map>()?;
 	let map = map.borrow();
 	Ok(Value::Int(map.len() as i32))
 });
 
 native_func!(map_pairs, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
-	let map = args[0].get_map()?;
+	let map = args[0].get_mut::<Map>()?;
 	let map = map.borrow();
 	let list: Vec<Value> = map
 		.iter()
