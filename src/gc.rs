@@ -6,6 +6,9 @@ use std::ops::Deref;
 
 use ordered_float::NotNan;
 
+use crate::value::Value;
+use crate::objects::{ImmObject, MutObject};
+
 #[derive(PartialEq, Eq, Clone, Copy)]
 enum TraceAction {
 	Unroot,
@@ -188,6 +191,12 @@ impl<T: Trace + ?Sized> GcRef<T> {
 	// except in the middle of the sweep step of GC, where this function must not be called.
 	fn wrapper(&self) -> &GcWrapper<T> { unsafe { &*self.wrapper } }
 	
+	// Safety: contained value must actually be of type U
+	// Used to downcast GcRef<dyn Trait> to concrete type when known
+	pub unsafe fn cast<U: Trace>(&self) -> GcRef<U> {
+		GcRef::new(&*(self.wrapper as *const GcWrapper<U>))
+	}
+	
 	// Safety: reference must be on the GC heap or about to be dropped
 	unsafe fn unroot(&self) {
 		if self.is_root.get() {
@@ -267,6 +276,13 @@ impl GcHeap {
 	
 	pub fn add_cell<T: Trace>(&mut self, v: T) -> GcCell<T> {
 		self.add(RefCell::new(v))
+	}
+	
+	pub fn add_imm<T: ImmObject>(&mut self, v: T) -> Value {
+		Value::ImmObject(self.add(v))
+	}
+	pub fn add_mut<T: MutObject>(&mut self, v: T) -> Value {
+		Value::MutObject(self.add_cell(v))
 	}
 	
 	pub fn weed_roots(&mut self) {

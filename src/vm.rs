@@ -400,11 +400,11 @@ impl VmState {
 			},
 			Instr::NewTuple(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
-				self.push(Value::ImmObject(gc.add(Tuple(values))));
+				self.push(gc.add_imm(Tuple(values)));
 			},
 			Instr::NewList(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
-				self.push(Value::List(gc.add_cell(values)));
+				self.push(gc.add_mut(List(values)));
 			},
 			Instr::NewMap(cnt) => {
 				let mut values = self.pop_n(2 * (cnt as usize))?;
@@ -470,7 +470,7 @@ impl VmState {
 					BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Times | BinaryOp::Divides
 					| BinaryOp::IntDivides | BinaryOp::Modulo => {
 						let a = a.get_numeric().map_err(|err|
-							if op == BinaryOp::Plus { expected_types("Int, Float, or String", &a) } else { err })?;
+							if op == BinaryOp::Plus { expected_types("int, float, or string", &a) } else { err })?;
 						let b = b.get_numeric()?;
 						let c = match op {
 							BinaryOp::Plus => Value::try_from(a + b)?,

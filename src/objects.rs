@@ -1,4 +1,4 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::convert::TryFrom;
 use std::fmt::{self, Write};
@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use crate::chunk::CompiledFunction;
 use crate::gc::{GcHeap, GcRef, GcCell, Trace, TraceCtx};
-use crate::types::{DynType, DynTyped, ImmData};
+use crate::types::{DynType, StaticDynTyped, DynTyped, ImmData};
 use crate::value::Value;
 use crate::vm::VmArena;
 use crate::register_dyn_type;
@@ -17,6 +17,7 @@ pub trait Object: Trace + DynTyped {
 	fn get_address(&self) -> usize {
 		self as *const Self as *const () as usize
 	}
+	
 	fn get_sequence<'a>(&'a self) -> Option<SmartRef<'a, [Value]>> {
 		None
 	}
@@ -38,10 +39,8 @@ pub trait Object: Trace + DynTyped {
 	fn prop(&self, _prop: &str, _gc: &mut GcHeap) -> Option<Value> {
 		None
 	}
-	fn make_iter(&self, _gc: &mut GcHeap) -> Option<Option<Value>> {
-		None
-	}
 }
+
 
 pub trait AsObject {
 	fn as_object(&self) -> &dyn Object;
@@ -63,11 +62,63 @@ pub trait MutObject: Object + AsObject {
 
 pub trait ImmObject: Object + AsObject + ImmData {}
 
+
+impl GcRef<dyn ImmObject> {
+	pub fn is<T: Object>(&self) -> bool {
+		self.as_any().is::<T>()
+	}
+	
+	pub fn downcast<T: ImmObject>(&self) -> Option<GcRef<T>> {
+		if self.as_any().is::<T>() {
+			unsafe { Some(self.cast::<T>()) }
+		} else {
+			None
+		}
+	}
+}
+impl GcCell<dyn MutObject> {
+	pub fn is<T: Object>(&self) -> bool {
+		self.borrow().as_any().is::<T>()
+	}
+	
+	pub fn downcast<T: MutObject>(&self) -> Option<GcCell<T>> {
+		if self.borrow().as_any().is::<T>() {
+			unsafe { Some(self.cast::<RefCell<T>>()) }
+		} else {
+			None
+		}
+	}
+}
+
+
+
 #[derive(Trace, PartialEq, Eq, Hash)]
 pub struct Tuple(pub Vec<Value>);
 register_dyn_type!("tuple", Tuple);
 
 impl Object for Tuple {
+	fn struct_eq(&self, other: &dyn Object) -> bool {
+		if let Some(other) = other.as_any().downcast_ref::<Tuple>() {
+			if self.0.len() == other.0.len() {
+				self.0.iter().zip(other.0.deref()).all(|(a,b)| a.struct_eq(b))
+			} else { false }
+		} else { false }
+	}
+	
+	fn cmp(&self, other: &dyn Object) -> Option<Ordering> {
+		let other = other.as_any().downcast_ref::<Tuple>()?;
+		if self.0.len() != other.0.len() { return None; }
+		let o = self.0.iter().zip(other.0.iter()).find_map(|(v1,v2)| {
+			let res = v1.cmp(v2);
+			if let Ok(Ordering::Equal) = res {
+				None
+			} else {
+				Some(res)
+			}
+		});
+		o.unwrap_or(Ok(Ordering::Equal)).ok()
+	}
+	
 	fn repr(&self) -> String {
 		let mut buf = String::new();
 		write!(buf, "(").unwrap();
@@ -180,15 +231,15 @@ impl<'a, T: ?Sized> Deref for SmartRef<'a, T> {
 
 #[derive(Trace)]
 pub enum GcSequence {
-	Tuple(GcRef<Vec<Value>>),
-	List(GcCell<Vec<Value>>),
+	Tuple(GcRef<Tuple>),
+	List(GcCell<List>),
 }
 
 impl GcSequence {
-	fn deref(&self) -> SmartRef<[Value]> {
+	pub fn deref(&self) -> SmartRef<[Value]> {
 		match self {
-			GcSequence::Tuple(tuple) => SmartRef::Static(tuple.deref()),
-			GcSequence::List(list) => SmartRef::Dynamic(std::cell::Ref::map(list.borrow(), |v| v.deref())),
+			GcSequence::Tuple(tuple) => SmartRef::Static(tuple.0.deref()),
+			GcSequence::List(list) => SmartRef::Dynamic(std::cell::Ref::map(list.borrow(), |v| v.0.deref())),
 		}
 	}
 }

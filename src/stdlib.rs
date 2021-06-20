@@ -8,8 +8,8 @@ use rand::prelude::random;
 use once_cell::sync::Lazy;
 use unicode_segmentation::{UnicodeSegmentation, GraphemeCursor};
 
-use crate::types::{Type, expected};
-use crate::objects::{NativeIterator, Callable};
+use crate::types::{Type, StaticDynTyped, expected};
+use crate::objects::{NativeIterator, Callable, Tuple, List};
 use crate::value::Value;
 use crate::gc::{Trace, Primitive, GcCell, GcHeap};
 use crate::vm::VmArena;
@@ -147,6 +147,7 @@ native_func!(error, args, {
 native_func!(seq_size, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let seq = args[0].get_sequence()?;
+	let seq = seq.deref();
 	let len = i32::try_from(seq.len())
 		.map_err(|_| String::from("Sequence length does not fit in integer"))?;
 	Ok(Value::Int(len))
@@ -167,6 +168,7 @@ native_func!(seq_sub, vm, args, {
 		return Err(expected("1/2 arguments", &(args.len() - 1).to_string()));
 	}
 	let seq = args[0].get_sequence()?;
+	let seq = seq.deref();
 	let start = args[1].get_int()?;
 	let start2 = wrap_index(start, seq.len());
 	let end = args.get(2).map(|v| v.get_int()).transpose()?;
@@ -177,10 +179,12 @@ native_func!(seq_sub, vm, args, {
 			format!("Cannot take sublist {}..{} of sequence of length {}",
 				start, end.map(|i| i.to_string()).unwrap_or_else(String::new), seq.len())
 		)?.to_vec();
-	match &args[0] {
-		Value::Tuple(_) => Ok(Value::Tuple(vm.gc.add(sub))),
-		Value::List(_) => Ok(Value::List(vm.gc.add_cell(sub))),
-		_ => unimplemented!(),
+	if args[0].is::<Tuple>() {
+		Ok(vm.gc.add_imm(Tuple(sub)))
+	} else if args[0].is::<List>() {
+		Ok(vm.gc.add_mut(List(sub)))
+	} else {
+		unimplemented!()
 	}
 });
 
@@ -194,6 +198,7 @@ native_func!(seq_map, vm, args, {
 		return Err(expected("1 argument", &(args.len() - 1).to_string()));
 	}
 	let seq = args[0].get_sequence()?;
+	let seq = seq.deref();
 
 	let mut mapped = vec![];
 	let callable = args[1].get_callable()?;
@@ -201,10 +206,12 @@ native_func!(seq_map, vm, args, {
 		mapped.push(callable.call(vm, vec![x.clone()])?);
 	}
 	
-	match &args[0] {
-		Value::Tuple(_) => Ok(Value::Tuple(vm.gc.add(mapped))),
-		Value::List(_) => Ok(Value::List(vm.gc.add_cell(mapped))),
-		_ => unimplemented!(),
+	if args[0].is::<Tuple>() {
+		Ok(vm.gc.add_imm(Tuple(mapped)))
+	} else if args[0].is::<List>() {
+		Ok(vm.gc.add_mut(List(mapped)))
+	} else {
+		unimplemented!()
 	}
 });
 
@@ -213,6 +220,7 @@ native_func!(seq_filter, vm, args, {
 		return Err(expected("1 argument", &(args.len() - 1).to_string()));
 	}
 	let seq = args[0].get_sequence()?;
+	let seq = seq.deref();
 
 	let mut filtered = vec![];
 	let callable = args[1].get_callable()?;
@@ -222,17 +230,19 @@ native_func!(seq_filter, vm, args, {
 		}
 	}
 	
-	match &args[0] {
-		Value::Tuple(_) => Ok(Value::Tuple(vm.gc.add(filtered))),
-		Value::List(_) => Ok(Value::List(vm.gc.add_cell(filtered))),
-		_ => unimplemented!(),
+	if args[0].is::<Tuple>() {
+		Ok(vm.gc.add_imm(Tuple(filtered)))
+	} else if args[0].is::<List>() {
+		Ok(vm.gc.add_mut(List(filtered)))
+	} else {
+		unimplemented!()
 	}
 });
 
 native_func!(tuple_to_list, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
-	let tuple = args[0].get_tuple()?;
-	Ok(Value::List(vm.gc.add_cell(tuple.deref().clone())))
+	let tuple = args[0].get_imm::<Tuple>()?;
+	Ok(vm.gc.add_mut(List(tuple.0.clone())))
 });
 
 native_func!(list_push, args, {
@@ -285,7 +295,7 @@ native_func!(list_to_tuple, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let list = args[0].get_list()?;
 	let list = list.borrow();
-	Ok(Value::Tuple(vm.gc.add(list.deref().clone())))
+	Ok(vm.gc.add_imm(Tuple(list.deref().clone())))
 });
 
 native_func!(map_contains, args, {
@@ -318,9 +328,9 @@ native_func!(map_pairs, vm, args, {
 	let map = map.borrow();
 	let list: Vec<Value> = map
 		.iter()
-		.map(|(k,v)| Value::Tuple(vm.gc.add(vec![k.clone(), v.clone()])))
+		.map(|(k,v)| vm.gc.add_imm(Tuple(vec![k.clone(), v.clone()])))
 		.collect();
-	Ok(Value::List(vm.gc.add_cell(list)))
+	Ok(vm.gc.add_mut(List(list)))
 });
 
 struct CharIterator {
@@ -373,7 +383,7 @@ native_func!(str_split, vm, args, {
 	let s = args[0].get_string()?;
 	let pat = args[1].get_string()?;
 	let parts: Vec<Value> = s.split(&pat).map(|s| Value::String(String::from(s).into_boxed_str())).collect();
-	Ok(Value::List(vm.gc.add_cell(parts)))
+	Ok(vm.gc.add_mut(List(parts)))
 });
 
 native_func!(str_contains, args, {
@@ -428,7 +438,7 @@ native_func!(iter_to_list, vm, args, {
 		values.push(val);
 	}
 	
-	Ok(Value::List(vm.gc.add_cell(values)))
+	Ok(vm.gc.add_mut(List(values)))
 });
 native_func!(iter_to_tuple, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
@@ -440,7 +450,7 @@ native_func!(iter_to_tuple, vm, args, {
 		values.push(val);
 	}
 	
-	Ok(Value::Tuple(vm.gc.add(values)))
+	Ok(vm.gc.add_imm(Tuple(values)))
 });
 
 native_func!(iter_next, vm, args, {
@@ -452,7 +462,7 @@ native_func!(iter_next, vm, args, {
 		Some(val) => vec![Value::Bool(true), val],
 		None => vec![Value::Bool(false)],
 	};
-	Ok(Value::Tuple(vm.gc.add(res)))
+	Ok(vm.gc.add_imm(Tuple(res)))
 });
 
 #[derive(Trace)]
@@ -540,7 +550,7 @@ pub static GLOBAL_NAMES: Lazy<HashSet<String>> = Lazy::new(||
 	FUNCTIONS.keys().cloned().chain(MODULES.keys().cloned()).collect());
 
 pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|| [
-	(Type::Tuple, vec![
+	(Type::Object(Tuple::DYN_TYPE), vec![
 		("size", seq_size as NativeFn),
 		("sub", seq_sub),
 		("to_iter", seq_to_iter),
@@ -548,7 +558,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("filter", seq_filter),
 		("to_list", tuple_to_list),
 	]),
-	(Type::List, vec![
+	(Type::Object(List::DYN_TYPE), vec![
 		("push", list_push as NativeFn),
 		("pop", list_pop),
 		("insert", list_insert),

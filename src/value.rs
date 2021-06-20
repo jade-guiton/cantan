@@ -23,9 +23,8 @@ pub enum Value {
 	String(Box<str>),
 	
 	ImmObject(GcRef<dyn ImmObject>),
-	Object(GcCell<dyn MutObject>),
+	MutObject(GcCell<dyn MutObject>),
 	
-	Tuple(GcRef<Vec<Value>>),
 	List(GcCell<Vec<Value>>),
 	Map(GcCell<HashMap<Value, Value>>),
 	Struct(GcCell<HashMap<String, Value>>),
@@ -72,9 +71,8 @@ impl Value {
 			Value::String(_) => Type::String,
 			
 			Value::ImmObject(o) => Type::Object(o.get_type()),
-			Value::Object(o) => Type::Object(o.borrow().get_type()),
+			Value::MutObject(o) => Type::Object(o.borrow().get_type()),
 			
-			Value::Tuple(_) => Type::Tuple,
 			Value::List(_) => Type::List,
 			Value::Map(_) => Type::Map,
 			Value::Struct(_) => Type::Struct,
@@ -87,27 +85,21 @@ impl Value {
 	get_prim!(get_bool, bool, Bool);
 	get_prim!(get_int, i32, Int);
 	get_prim!(get_list, GcCell<Vec<Value>>, List);
-	get_prim!(get_tuple, GcRef<Vec<Value>>, Tuple);
 	get_prim!(get_iter, GcCell<dyn NativeIterator>, Iterator);
 	get_prim!(get_map, GcCell<HashMap<Value, Value>>, Map);
 	
-	pub fn get_sequence<'a>(&'a self) -> Result<SmartRef<'a,[Value]>, String> {
-		let opt: Option<SmartRef<'a,[Value]>> = match self {
+	pub fn get_sequence<'a>(&'a self) -> Result<GcSequence, String> {
+		let opt = match self {
 			Value::ImmObject(o) => {
-				o.as_any().downcast_ref::<Tuple>().map(|tuple|
-					SmartRef::Static(tuple.0.deref()))
+				if let Some(tuple) = o.downcast::<Tuple>() {
+					Some(GcSequence::Tuple(tuple))
+				} else { None }
 			},
-			Value::Object(o) => {
-				if std::cell::Ref::map(o.borrow(), |o2| o2.as_any()).is::<List>() {
-					Some(SmartRef::Dynamic(std::cell::Ref::map(o.borrow(), |o2|
-						o2.as_any().downcast_ref::<List>().unwrap().0.deref())))
-				} else {
-					None
-				}
-			}
-			
-			Value::Tuple(tuple) => Some(SmartRef::Static(tuple)),
-			Value::List(list) => Some(SmartRef::Dynamic(std::cell::Ref::map(list.borrow(), |l| l.deref()))),
+			Value::MutObject(o) => {
+				if let Some(list) = o.downcast::<List>() {
+					Some(GcSequence::List(list))
+				} else { None }
+			},
 			
 			_ => None,
 		};
@@ -156,12 +148,8 @@ impl Value {
 			(Value::String(s1), Value::String(s2)) => s1 == s2,
 			
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.struct_eq(o2.as_object()),
-			(Value::Object(o1), Value::Object(o2)) => o1.borrow().struct_eq(o2.borrow().as_object()),
+			(Value::MutObject(o1), Value::MutObject(o2)) => o1.borrow().struct_eq(o2.borrow().as_object()),
 			
-			(Value::Tuple(t1), Value::Tuple(t2)) =>
-				if t1.len() == t2.len() {
-					t1.iter().zip(t2.deref()).all(|(a,b)| a.struct_eq(b))
-				} else { false },
 			(Value::List(l1), Value::List(l2)) => {
 				let (l1, l2) = (l1.borrow(), l2.borrow());
 				if l1.len() == l2.len() {
@@ -198,23 +186,8 @@ impl Value {
 				Some(s1.cmp(s2)),
 			
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.cmp(o2.as_object()),
-			(Value::Object(o1), Value::Object(o2)) => o1.borrow().cmp(o2.borrow().as_object()),
+			(Value::MutObject(o1), Value::MutObject(o2)) => o1.borrow().cmp(o2.borrow().as_object()),
 			
-			(Value::Tuple(t1), Value::Tuple(t2)) => {
-				if t1.len() == t2.len() {
-					let o = t1.iter().zip(t2.iter()).find_map(|(v1,v2)| {
-						let res = v1.cmp(v2);
-						if let Ok(Ordering::Equal) = res {
-							None
-						} else {
-							Some(res)
-						}
-					});
-					Some(o.unwrap_or(Ok(Ordering::Equal))?)
-				} else {
-					None
-				}
-			}
 			_ => None,
 		};
 		res.ok_or_else(|| format!("Cannot compare: '{}', '{}'", self.repr(), other.repr()))
@@ -245,23 +218,8 @@ impl Value {
 			Value::String(s) => format!("{:?}", s),
 			
 			Value::ImmObject(o) => o.repr(),
-			Value::Object(o) => o.borrow().repr(),
+			Value::MutObject(o) => o.borrow().repr(),
 			
-			Value::Tuple(list) => {
-				let mut buf = String::new();
-				write!(buf, "(").unwrap();
-				for (idx, val) in list.iter().enumerate() {
-					write!(buf, "{}", val.repr()).unwrap();
-					if idx < list.len() - 1 {
-						write!(buf, ", ").unwrap();
-					}
-				}
-				if list.len() == 1 {
-					write!(buf, ",").unwrap();
-				}
-				write!(buf, ")").unwrap();
-				buf
-			},
 			Value::List(list) => {
 				let list = list.borrow();
 				let mut buf = String::new();
@@ -317,13 +275,8 @@ impl Value {
 	pub fn index(&self, idx: &Value) -> Result<Value, String> {
 		let res = match self {
 			Value::ImmObject(o) => o.index(idx),
-			Value::Object(o) => o.borrow().index(idx),
+			Value::MutObject(o) => o.borrow().index(idx),
 			
-			Value::Tuple(tuple) => {
-				let idx = idx.get_int()?;
-				Some(usize::try_from(idx).ok().and_then(|idx| tuple.get(idx)).cloned()
-					.ok_or_else(|| format!("Trying to index {}-tuple with: {}", tuple.len(), idx)))
-			},
 			Value::List(list) => {
 				let list = list.borrow();
 				let idx = idx.get_int()?;
@@ -340,7 +293,7 @@ impl Value {
 	
 	pub fn set_index(&self, idx: Value, val: Value) -> Result<(), String> {
 		let res = match self {
-			Value::Object(o) => {
+			Value::MutObject(o) => {
 				if let Some(res) = o.borrow_mut().set_index(idx, val) {
 					Some(res?)
 				} else {
@@ -369,26 +322,24 @@ impl Value {
 	
 	pub fn prop(&self, prop: &str, gc: &mut GcHeap) -> Result<Value, String> {
 		let res = match self {
-			Value::ImmObject(o) => o.prop(prop, gc),
-			Value::Object(o) => o.borrow().prop(prop, gc),
+			Value::MutObject(o) => o.borrow().prop(prop, gc),
 			
 			Value::Struct(obj) => {
 				Some(obj.borrow().get(prop).ok_or_else(|| format!("Object does not have prop '{}'", prop))?.clone())
 			},
-			_ => {
-				if let Some(met) = crate::stdlib::METHODS.get(&self.get_type()).and_then(|mets| mets.get(prop)) {
-					Some(Value::from_native_func(gc, met, Some(self.clone())))
-				} else {
-					None
-				}
-			}
+			_ => None,
 		};
+		let res = res.or_else(|| {
+			crate::stdlib::METHODS.get(&self.get_type())
+				.and_then(|mets| mets.get(prop))
+				.map(|met| Value::from_native_func(gc, met, Some(self.clone())))
+		});
 		res.ok_or_else(|| format!("Cannot get prop '{}' of {}", prop, self.get_type()))
 	}
 	
 	pub fn set_prop(&self, prop: &str, val: Value) -> Result<(), String> {
 		let res = match self {
-			Value::Object(o) => {
+			Value::MutObject(o) => {
 				if let Some(res) = o.borrow_mut().set_prop(prop, val) {
 					Some(res?)
 				} else {
@@ -408,20 +359,36 @@ impl Value {
 	}
 	
 	pub fn make_iter(&self, gc: &mut GcHeap) -> Result<Option<Value>, String> {
-		let res = match self {
-			Value::ImmObject(o) => o.make_iter(gc),
-			Value::Object(o) => o.borrow().make_iter(gc),
-			
-			Value::List(list) => {
-				Some(Some(Value::from_native_iter(gc, SequenceIterator::new(GcSequence::List(list.clone())))))
-			},
-			Value::Tuple(tuple) => {
-				Some(Some(Value::from_native_iter(gc, SequenceIterator::new(GcSequence::Tuple(tuple.clone())))))
-			},
-			Value::Iterator(_) => Some(None),
-			_ => None,
+		if let Value::Iterator(_) = self {
+			return Ok(None);
+		}
+		let seq = self.get_sequence()
+			.map_err(|_| format!("Cannot iterate on {}", self.repr()))?;
+		Ok(Some(Value::from_native_iter(gc, SequenceIterator::new(seq))))
+	}
+	
+	pub fn is<T: Object>(&self) -> bool {
+		match self {
+			Value::ImmObject(o) => o.is::<T>(),
+			Value::MutObject(o) => o.is::<T>(),
+			_ => false,
+		}
+	}
+	pub fn get_imm<T: ImmObject + StaticDynTyped>(&self) -> Result<GcRef<T>, String> {
+		let res = if let Value::ImmObject(o) = self {
+			o.downcast::<T>()
+		} else {
+			None
 		};
-		res.ok_or_else(|| format!("Cannot iterate: {}", self.repr()))
+		res.ok_or_else(|| expected_types(<T as StaticDynTyped>::DYN_TYPE.type_name, self))
+	}
+	pub fn get_mut<T: MutObject + StaticDynTyped>(&self) -> Result<GcCell<T>, String> {
+		let res = if let Value::MutObject(o) = self {
+			o.downcast::<T>()
+		} else {
+			None
+		};
+		res.ok_or_else(|| expected_types(<T as StaticDynTyped>::DYN_TYPE.type_name, self))
 	}
 }
 
@@ -438,9 +405,8 @@ impl PartialEq for Value {
 			(Value::String(s1), Value::String(s2)) => s1 == s2,
 			
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.struct_eq(o2.as_object()),
-			(Value::Object(o1), Value::Object(o2)) => o1.get_addr() == o2.get_addr(),
+			(Value::MutObject(o1), Value::MutObject(o2)) => o1.get_addr() == o2.get_addr(),
 			
-			(Value::Tuple(t1), Value::Tuple(t2)) => **t1 == **t2,
 			(Value::List(l1), Value::List(l2)) => l1.get_addr() == l2.get_addr(),
 			(Value::Map(m1), Value::Map(m2)) => m1.get_addr() == m2.get_addr(),
 			(Value::Struct(o1), Value::Struct(o2)) => o1.get_addr() == o2.get_addr(),
@@ -464,9 +430,8 @@ impl Hash for Value {
 			Value::String(s) => s.hash(state),
 			
 			Value::ImmObject(o) => o.imm_hash().hash(state),
-			Value::Object(o) => o.get_addr().hash(state),
+			Value::MutObject(o) => o.get_addr().hash(state),
 			
-			Value::Tuple(values) => values.hash(state),
 			Value::List(list) => list.get_addr().hash(state),
 			Value::Map(map) => map.get_addr().hash(state),
 			Value::Struct(obj) => obj.get_addr().hash(state),
