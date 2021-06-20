@@ -30,11 +30,11 @@ pub enum Instr {
 	Return, // Return with stack top
 	
 	// Values
-	Constant(u16), // Constant by index → Stack top
+	Constant(u16), // Constant by index → Stack top
 	NewTuple(u16), // Take N values from stack → Stack top
 	NewList(u16), // Take N values from stack → Stack top
 	NewMap(u16), // Take 2N values from stack → Stack top
-	NewObject(u16), // Object from class by idx → Stack top
+	NewStruct(u16), // Struct from class by idx → Stack top
 	
 	// Operations
 	Binary(BinaryOp), // Binary operation on stack

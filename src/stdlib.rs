@@ -8,7 +8,8 @@ use rand::prelude::random;
 use once_cell::sync::Lazy;
 use unicode_segmentation::{UnicodeSegmentation, GraphemeCursor};
 
-use crate::value::{expected, NativeIterator, Callable, Type, Value};
+use crate::types::{Type, expected};
+use crate::value::{NativeIterator, Callable, Value};
 use crate::gc::{Trace, Primitive, GcCell, GcHeap};
 use crate::vm::VmArena;
 
@@ -25,7 +26,7 @@ macro_rules! native_func {
 
 fn check_arg_cnt(exp: usize, cnt: usize) -> Result<(), String> {
 	if cnt != exp {
-		expected(&format!("{} arguments", exp), &cnt.to_string())
+		Err(expected(&format!("{} arguments", exp), &cnt.to_string()))
 	} else {
 		Ok(())
 	}
@@ -76,7 +77,7 @@ impl NativeIterator for IntIterator {
 
 fn check_range_args(args: &[Value]) -> Result<(Option<i32>, i32, i32), String> {
 	if args.is_empty() || args.len() > 3 {
-		return expected("1-3 arguments", &args.len().to_string());
+		return Err(expected("1-3 arguments", &args.len().to_string()));
 	}
 	let (start, until) = if args.len() == 1 {
 		(None, args[0].get_int()?)
@@ -114,7 +115,7 @@ native_func!(rand_range, args, {
 
 native_func!(type_, args, {
 	check_arg_cnt(1, args.len())?;
-	Ok(Value::String(args[0].get_type().get_string().to_string().into_boxed_str()))
+	Ok(Value::String(format!("{}", args[0].get_type()).into_boxed_str()))
 });
 
 native_func!(read_file, args, {
@@ -162,7 +163,7 @@ fn wrap_index(idx: i32, len: usize) -> Option<usize> {
 
 native_func!(seq_sub, vm, args, {
 	if args.len() < 2 || args.len() > 3 {
-		return expected("1/2 arguments", &(args.len() - 1).to_string());
+		return Err(expected("1/2 arguments", &(args.len() - 1).to_string()));
 	}
 	let seq = args[0].get_sequence()?;
 	let start = args[1].get_int()?;
@@ -189,7 +190,7 @@ native_func!(seq_to_iter, vm, args, {
 
 native_func!(seq_map, vm, args, {
 	if args.len() != 2 {
-		return expected("1 argument", &(args.len() - 1).to_string());
+		return Err(expected("1 argument", &(args.len() - 1).to_string()));
 	}
 	let seq = args[0].get_sequence()?;
 
@@ -208,7 +209,7 @@ native_func!(seq_map, vm, args, {
 
 native_func!(seq_filter, vm, args, {
 	if args.len() != 2 {
-		return expected("1 argument", &(args.len() - 1).to_string());
+		return Err(expected("1 argument", &(args.len() - 1).to_string()));
 	}
 	let seq = args[0].get_sequence()?;
 
@@ -392,7 +393,7 @@ native_func!(str_parse_int, args, {
 
 native_func!(iter_join, vm, args, {
 	if args.len() > 2 {
-		return expected("0/1 arguments", &(args.len() - 1).to_string());
+		return Err(expected("0/1 arguments", &(args.len() - 1).to_string()));
 	}
 	let iter = args[0].get_iter()?;
 	let mut iter = iter.borrow_mut();
@@ -590,6 +591,6 @@ pub fn create(globals: &mut HashMap<String, Value>, gc: &mut GcHeap) {
 		for (name, func) in methods {
 			map.insert(name.clone(), Value::from_native_func(gc, func, None));
 		}
-		globals.insert(name.clone(), Value::Object(gc.add_cell(map)));
+		globals.insert(name.clone(), Value::Struct(gc.add_cell(map)));
 	}
 }

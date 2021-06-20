@@ -40,7 +40,7 @@ pub enum Expr {
 	Tuple(Vec<Expr>),
 	List(Vec<Expr>),
 	Map(Vec<(Expr, Expr)>),
-	Object(Vec<(String, Expr)>),
+	Struct(Vec<(String, Expr)>),
 	Function(Vec<String>, Block),
 	LExpr(LExpr),
 	Call(Box<Expr>, Vec<Expr>),

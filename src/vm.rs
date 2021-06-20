@@ -6,6 +6,7 @@ use std::rc::Rc;
 
 use crate::ast::{UnaryOp, BinaryOp};
 use crate::chunk::*;
+use crate::types::*;
 use crate::value::*;
 use crate::gc::{Trace, GcRef, GcCell, GcHeap};
 
@@ -398,7 +399,7 @@ impl VmState {
 			},
 			Instr::NewTuple(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
-				self.push(Value::Tuple(gc.add(values)));
+				self.push(Value::ImmObject(gc.add(Tuple(values))));
 			},
 			Instr::NewList(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
@@ -411,12 +412,12 @@ impl VmState {
 				let map: HashMap<Value, Value> = keys.drain(..).map(|(_,v)| v).zip(values.drain(..).map(|(_,v)| v)).collect();
 				self.push(Value::Map(gc.add_cell(map)));
 			},
-			Instr::NewObject(class_idx) => {
-				let class = func.chunk.classes.get(class_idx as usize).ok_or_else(|| String::from("Using undefined object class"))?;
+			Instr::NewStruct(class_idx) => {
+				let class = func.chunk.classes.get(class_idx as usize).ok_or_else(|| String::from("Using undefined struct class"))?;
 				let mut values = self.pop_n(class.len())?;
-				let obj: HashMap<String, Value> = class.iter().cloned()
+				let st: HashMap<String, Value> = class.iter().cloned()
 					.zip(values.drain(..)).collect();
-				self.push(Value::Object(gc.add_cell(obj)));
+				self.push(Value::Struct(gc.add_cell(st)));
 			},
 			Instr::Binary(op) => {
 				let b = self.pop()?;
@@ -468,7 +469,7 @@ impl VmState {
 					BinaryOp::Plus | BinaryOp::Minus | BinaryOp::Times | BinaryOp::Divides
 					| BinaryOp::IntDivides | BinaryOp::Modulo => {
 						let a = a.get_numeric().map_err(|err|
-							if op == BinaryOp::Plus { expected_types::<()>("Int, Float, or String", &a).unwrap_err() } else { err })?;
+							if op == BinaryOp::Plus { expected_types("Int, Float, or String", &a) } else { err })?;
 						let b = b.get_numeric()?;
 						let c = match op {
 							BinaryOp::Plus => Value::try_from(a + b)?,

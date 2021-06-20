@@ -116,7 +116,7 @@ peg::parser! {
 			e:("[" _ e:(expr() ** (_ "," _)) _ ("," _)? "]" {e}) { Expr::List(e) }
 			("[" _ "=" _ "]") { Expr::Map(vec![]) } // Empty map [=]
 			e:("[" _ e:(map_item() ** (_ "," _)) _ ("," _)? "]" {e}) { Expr::Map(e) }
-			i:("{" _ i:(object_item() ** (_ "," _)) _ ("," _)? "}" {i}) { Expr::Object(i) }
+			i:("{" _ i:(struct_item() ** (_ "," _)) _ ("," _)? "}" {i}) { Expr::Struct(i) }
 			b:boolean() wb() { Expr::Primitive(Primitive::Bool(b)) }
 			"nil" wb() { Expr::Primitive(Primitive::Nil) }
 			s:string() { Expr::Primitive(Primitive::String(s.into_boxed_str())) }
@@ -155,7 +155,7 @@ peg::parser! {
 			
 		rule map_item() -> (Expr, Expr)
 			= k:expr() _ "=" _ v:expr() { (k, v) }
-		rule object_item() -> (String, Expr)
+		rule struct_item() -> (String, Expr)
 			= i:id() _ e:val_or_fn() { (i,e) }
 		rule fn_def() -> Expr = "(" _ a:(id() ** (_ "," _)) _ ")" _ b:fn_body()
 				{ Expr::Function(a, b) }

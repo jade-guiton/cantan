@@ -188,9 +188,9 @@ impl<'a> FunctionContext<'a> {
 				self.func.code.push(Instr::NewMap(len));
 				self.stack_size -= 2*len as usize;
 			},
-			Expr::Object(pairs) => {
+			Expr::Struct(pairs) => {
 				let len = u16::try_from(pairs.len())
-					.map_err(|_| String::from("Object is too large"))?;
+					.map_err(|_| String::from("Struct is too large"))?;
 				let mut class = vec![];
 				for (id, value) in pairs {
 					class.push(id);
@@ -202,8 +202,8 @@ impl<'a> FunctionContext<'a> {
 						self.func.classes.push(class);
 						idx
 					});
-				let idx = u16::try_from(idx).map_err(|_| String::from("Too many object classes"))?;
-				self.func.code.push(Instr::NewObject(idx));
+				let idx = u16::try_from(idx).map_err(|_| String::from("Too many struct classes"))?;
+				self.func.code.push(Instr::NewStruct(idx));
 				self.stack_size -= len as usize;
 			},
 			Expr::Function(arg_names, block) => {
