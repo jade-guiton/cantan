@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::convert::TryFrom;
 use std::fmt::{self, Write};
 use std::hash::{Hash, Hasher};
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 use std::rc::Rc;
 
 use crate::chunk::CompiledFunction;
@@ -83,9 +83,6 @@ macro_rules! hashable_imm_type {
 
 
 impl dyn Object {
-	pub fn is<T: Object>(&self) -> bool {
-		self.as_any().is::<T>()
-	}
 	pub fn downcast<T: Object>(&self) -> Option<&T> {
 		self.as_any().downcast_ref::<T>()
 	}
@@ -423,6 +420,36 @@ impl NativeIterator for SequenceIterator {
 		}
 	}
 }
+
+#[derive(Trace)]
+pub struct NativeIteratorWrapper {
+	iter: Box<dyn NativeIterator>,
+}
+register_dyn_type!("iterator", NativeIteratorWrapper);
+
+impl NativeIteratorWrapper {
+	pub fn new(iter: impl NativeIterator) -> Self {
+		NativeIteratorWrapper {
+			iter: Box::new(iter),
+		}
+	}
+}
+
+impl Deref for NativeIteratorWrapper {
+	type Target = dyn NativeIterator;
+	fn deref(&self) -> &dyn NativeIterator {
+		self.iter.deref()
+	}
+}
+impl DerefMut for NativeIteratorWrapper {
+	fn deref_mut(&mut self) -> &mut dyn NativeIterator {
+		self.iter.deref_mut()
+	}
+}
+
+impl Object for NativeIteratorWrapper {}
+impl MutObject for NativeIteratorWrapper {}
+
 
 #[derive(Trace)]
 pub enum Callable {

@@ -63,7 +63,6 @@ macro_rules! register_dyn_type {
 pub enum Type {
 	Int, Float, String, Bool, Nil,
 	Object(DynType),
-	Iterator,
 }
 
 impl fmt::Display for Type {
@@ -76,7 +75,6 @@ impl fmt::Display for Type {
 			Type::Nil => "nil",
 			
 			Type::Object(t) => t.type_name,
-			Type::Iterator => "iterator",
 		};
 		write!(fmt, "{}", s)
 	}

@@ -2,16 +2,16 @@ use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
 use std::convert::TryFrom;
 use std::iter::Iterator;
-use std::ops::Deref;
+use std::ops::{Deref, DerefMut};
 
 use rand::prelude::random;
 use once_cell::sync::Lazy;
 use unicode_segmentation::{UnicodeSegmentation, GraphemeCursor};
 
 use crate::types::{Type, StaticDynTyped, expected};
-use crate::objects::{NativeIterator, Callable, Tuple, List, Map};
+use crate::objects::{NativeIterator, Callable, Tuple, List, Map, NativeIteratorWrapper};
 use crate::value::Value;
-use crate::gc::{Trace, Primitive, GcCell, GcHeap};
+use crate::gc::{Trace, GcCell, GcHeap};
 use crate::vm::VmArena;
 
 // To avoid writing the same type signature every time
@@ -57,12 +57,12 @@ native_func!(repr, args, {
 });
 
 
+#[derive(Trace)]
 struct IntIterator {
 	next: Cell<i32>,
 	until: i32,
 	step: i32,
 }
-unsafe impl Primitive for IntIterator {}
 
 impl NativeIterator for IntIterator {
 	fn next(&mut self, _vm: &mut VmArena) -> Result<Option<Value>, String> {
@@ -333,12 +333,13 @@ native_func!(map_pairs, vm, args, {
 	Ok(vm.gc.add_mut(List(list)))
 });
 
+unsafe impl Trace for GraphemeCursor {}
+#[derive(Trace)]
 struct CharIterator {
 	string: String,
 	offset: usize,
 	cursor: GraphemeCursor,
 }
-unsafe impl Primitive for CharIterator {}
 
 impl CharIterator {
 	fn new(string: String) -> Self {
@@ -406,8 +407,9 @@ native_func!(iter_join, vm, args, {
 	if args.len() > 2 {
 		return Err(expected("0/1 arguments", &(args.len() - 1).to_string()));
 	}
-	let iter = args[0].get_iter()?;
+	let iter = args[0].get_mut::<NativeIteratorWrapper>()?;
 	let mut iter = iter.borrow_mut();
+	let iter: &mut dyn NativeIterator = iter.deref_mut().deref_mut();
 	let sep = if args.len() == 2 {
 		Some(args[1].get_string()?)
 	} else {
@@ -430,8 +432,9 @@ native_func!(iter_join, vm, args, {
 
 native_func!(iter_to_list, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
-	let iter = args[0].get_iter()?;
+	let iter = args[0].get_mut::<NativeIteratorWrapper>()?;
 	let mut iter = iter.borrow_mut();
+	let iter: &mut dyn NativeIterator = iter.deref_mut().deref_mut();
 	
 	let mut values = vec![];
 	while let Some(val) = iter.next(vm)? {
@@ -442,8 +445,9 @@ native_func!(iter_to_list, vm, args, {
 });
 native_func!(iter_to_tuple, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
-	let iter = args[0].get_iter()?;
+	let iter = args[0].get_mut::<NativeIteratorWrapper>()?;
 	let mut iter = iter.borrow_mut();
+	let iter: &mut dyn NativeIterator = iter.deref_mut().deref_mut();
 	
 	let mut values = vec![];
 	while let Some(val) = iter.next(vm)? {
@@ -455,7 +459,7 @@ native_func!(iter_to_tuple, vm, args, {
 
 native_func!(iter_next, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
-	let iter = args[0].get_iter()?;
+	let iter = args[0].get_mut::<NativeIteratorWrapper>()?;
 	let mut iter = iter.borrow_mut();
 	
 	let res = match iter.next(vm)? {
@@ -467,7 +471,7 @@ native_func!(iter_next, vm, args, {
 
 #[derive(Trace)]
 struct MapIterator {
-	before: GcCell<dyn NativeIterator>,
+	before: GcCell<NativeIteratorWrapper>,
 	func: Callable,
 }
 
@@ -482,17 +486,17 @@ impl NativeIterator for MapIterator {
 
 native_func!(iter_map, vm, args, {
 	check_arg_cnt(1, args.len() - 1)?;
-	let before = args[0].get_iter()?;
+	let before = args[0].get_mut::<NativeIteratorWrapper>()?;
 	let func = args[1].get_callable()?;
 	
-	Ok(Value::Iterator(vm.gc.add_cell(MapIterator {
+	Ok(vm.gc.add_mut(NativeIteratorWrapper::new(MapIterator {
 		before, func,
 	})))
 });
 
 #[derive(Trace)]
 struct FilterIterator {
-	before: GcCell<dyn NativeIterator>,
+	before: GcCell<NativeIteratorWrapper>,
 	func: Callable,
 }
 
@@ -513,10 +517,10 @@ impl NativeIterator for FilterIterator {
 
 native_func!(iter_filter, vm, args, {
 	check_arg_cnt(1, args.len() - 1)?;
-	let before = args[0].get_iter()?;
+	let before = args[0].get_mut::<NativeIteratorWrapper>()?;
 	let func = args[1].get_callable()?;
 	
-	Ok(Value::Iterator(vm.gc.add_cell(FilterIterator {
+	Ok(vm.gc.add_mut(NativeIteratorWrapper::new(FilterIterator {
 		before, func,
 	})))
 });
@@ -583,7 +587,7 @@ pub static METHODS: Lazy<HashMap<Type, HashMap<String, NativeFn>>> = Lazy::new(|
 		("contains", str_contains),
 		("parse_int", str_parse_int),
 	]),
-	(Type::Iterator, vec![
+	(Type::Object(NativeIteratorWrapper::DYN_TYPE), vec![
 		("join", iter_join as NativeFn),
 		("to_list", iter_to_list),
 		("to_tuple", iter_to_tuple),

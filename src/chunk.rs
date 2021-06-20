@@ -4,7 +4,7 @@ use std::rc::Rc;
 use crate::ast::{UnaryOp, BinaryOp};
 use crate::colors::*;
 use crate::value::Value;
-use crate::gc::Primitive;
+use crate::gc::Trace;
 
 #[derive(Debug, Clone)]
 #[allow(unused)]
@@ -117,4 +117,4 @@ impl CompiledFunction {
 }
 
 // Note: This works because the Values in CompiledFunction.csts are guaranteed to be primitive values
-unsafe impl Primitive for CompiledFunction {}
+unsafe impl Trace for CompiledFunction {}

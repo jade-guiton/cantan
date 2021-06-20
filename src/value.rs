@@ -12,7 +12,6 @@ use crate::objects::*;
 
 #[derive(Clone, Trace)]
 pub enum Value {
-	// Unpacked Primitive
 	Nil,
 	Bool(bool),
 	Int(i32),
@@ -21,8 +20,6 @@ pub enum Value {
 	
 	ImmObject(GcRef<dyn ImmObject>),
 	MutObject(GcCell<dyn MutObject>),
-	
-	Iterator(GcCell<dyn NativeIterator>),
 }
 
 pub fn expected_types(exp: &str, got: &Value) -> String {
@@ -51,7 +48,7 @@ impl Value {
 	}
 	
 	pub fn from_native_iter(gc: &mut GcHeap, iter: impl NativeIterator) -> Self {
-		Value::Iterator(gc.add_cell(iter))
+		gc.add_mut(NativeIteratorWrapper::new(iter))
 	}
 	
 	pub fn get_type(&self) -> Type {
@@ -64,14 +61,11 @@ impl Value {
 			
 			Value::ImmObject(o) => Type::Object(o.get_type()),
 			Value::MutObject(o) => Type::Object(o.borrow().get_type()),
-			
-			Value::Iterator(_) => Type::Iterator,
 		}
 	}
 	
 	get_prim!(get_bool, bool, Bool);
 	get_prim!(get_int, i32, Int);
-	get_prim!(get_iter, GcCell<dyn NativeIterator>, Iterator);
 	
 	pub fn get_sequence<'a>(&'a self) -> Result<GcSequence, String> {
 		let opt = match self {
@@ -185,9 +179,6 @@ impl Value {
 			
 			Value::ImmObject(o) => o.repr(),
 			Value::MutObject(o) => o.borrow().repr(),
-			
-			Value::Iterator(iter) =>
-				format!("<iter 0x{:x}>", iter.get_addr() as usize),
 		}
 	}
 	
@@ -231,7 +222,7 @@ impl Value {
 	}
 	
 	pub fn make_iter(&self, gc: &mut GcHeap) -> Result<Option<Value>, String> {
-		if let Value::Iterator(_) = self {
+		if self.is::<NativeIteratorWrapper>() {
 			return Ok(None);
 		}
 		let seq = self.get_sequence()
@@ -278,8 +269,6 @@ impl PartialEq for Value {
 			
 			(Value::ImmObject(o1), Value::ImmObject(o2)) => o1.struct_eq(o2.as_object()),
 			(Value::MutObject(o1), Value::MutObject(o2)) => o1.get_addr() == o2.get_addr(),
-			
-			(Value::Iterator(i1), Value::Iterator(i2)) => i1.get_addr() == i2.get_addr(),
 			_ => false,
 		}
 	}
@@ -298,8 +287,6 @@ impl Hash for Value {
 			
 			Value::ImmObject(o) => o.imm_hash().hash(state),
 			Value::MutObject(o) => o.get_addr().hash(state),
-			
-			Value::Iterator(iter) => iter.get_addr().hash(state),
 		}
 	}
 }

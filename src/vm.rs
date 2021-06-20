@@ -28,7 +28,7 @@ struct NativeCallParams {
 #[derive(Trace)]
 enum NativeCall {
 	NativeFunction(NativeCallParams),
-	Iterator(GcCell<dyn NativeIterator>),
+	Iterator(GcCell<NativeIteratorWrapper>),
 }
 
 #[derive(Trace)]
@@ -585,7 +585,7 @@ impl VmState {
 					self.set_reg(iter_reg, new_iter);
 					iter = self.get_reg(iter_reg)?;
 				}
-				let iter = iter.get_iter()?;
+				let iter = iter.get_mut::<NativeIteratorWrapper>()?;
 				self.call_native();
 				return Ok(Some(NativeCall::Iterator(iter)));
 			},
@@ -656,7 +656,9 @@ impl VmArena {
 						}
 					},
 					NativeCall::Iterator(iter) => {
-						match iter.borrow_mut().next(self) {
+						let mut iter = iter.borrow_mut();
+						let iter: &mut dyn NativeIterator = iter.deref_mut().deref_mut();
+						match iter.next(self) {
 							Ok(val) => {
 								if let Some(val) = val {
 									res.push(val);

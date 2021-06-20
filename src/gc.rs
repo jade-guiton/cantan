@@ -20,23 +20,17 @@ pub struct TraceCtx(TraceAction);
 // Safety: .trace(ctx) must call .trace(ctx) on all direct GcRef or Trace children.
 pub unsafe trait Trace: 'static {
 	// Safety: must only be called on objects in the GC heap.
-	unsafe fn trace(&self, _ctx: TraceCtx);
-}
-
-// Safety: Marker trait for types with no accessible GcRefs
-pub unsafe trait Primitive: 'static {}
-unsafe impl<T: Primitive> Trace for T {
 	unsafe fn trace(&self, _ctx: TraceCtx) {}
 }
 
-unsafe impl Primitive for () {}
-unsafe impl Primitive for bool {}
-unsafe impl Primitive for i32 {}
-unsafe impl Primitive for usize {}
-unsafe impl Primitive for String {}
-unsafe impl Primitive for NotNan<f64> {}
-unsafe impl Primitive for Box<str> {}
-unsafe impl<T: Primitive> Primitive for Cell<T> {}
+unsafe impl Trace for () {}
+unsafe impl Trace for bool {}
+unsafe impl Trace for i32 {}
+unsafe impl Trace for usize {}
+unsafe impl Trace for String {}
+unsafe impl Trace for NotNan<f64> {}
+unsafe impl Trace for str {}
+unsafe impl<T: Trace> Trace for Cell<T> {}
 
 unsafe impl<T: Trace> Trace for Option<T> {
 	unsafe fn trace(&self, ctx: TraceCtx) {
@@ -86,6 +80,12 @@ unsafe impl<T1: Trace, T2: Trace> Trace for HashMap<T1, GcRef<T2>> {
 unsafe impl<T: Trace + ?Sized> Trace for RefCell<T> {
 	unsafe fn trace(&self, ctx: TraceCtx) {
 		self.borrow().trace(ctx)
+	}
+}
+
+unsafe impl<T: Trace + ?Sized> Trace for Box<T> {
+	unsafe fn trace(&self, ctx: TraceCtx) {
+		self.deref().trace(ctx)
 	}
 }
 
