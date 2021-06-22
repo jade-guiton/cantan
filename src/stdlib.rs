@@ -180,7 +180,7 @@ native_func!(seq_sub, vm, args, {
 				start, end.map(|i| i.to_string()).unwrap_or_else(String::new), seq.len())
 		)?.to_vec();
 	if args[0].is::<Tuple>() {
-		Ok(vm.gc.add_imm(Tuple(sub)))
+		Ok(vm.gc.add_imm(Tuple(sub.into_boxed_slice())))
 	} else if args[0].is::<List>() {
 		Ok(vm.gc.add_mut(List(sub)))
 	} else {
@@ -207,7 +207,7 @@ native_func!(seq_map, vm, args, {
 	}
 	
 	if args[0].is::<Tuple>() {
-		Ok(vm.gc.add_imm(Tuple(mapped)))
+		Ok(vm.gc.add_imm(Tuple(mapped.into_boxed_slice())))
 	} else if args[0].is::<List>() {
 		Ok(vm.gc.add_mut(List(mapped)))
 	} else {
@@ -231,7 +231,7 @@ native_func!(seq_filter, vm, args, {
 	}
 	
 	if args[0].is::<Tuple>() {
-		Ok(vm.gc.add_imm(Tuple(filtered)))
+		Ok(vm.gc.add_imm(Tuple(filtered.into_boxed_slice())))
 	} else if args[0].is::<List>() {
 		Ok(vm.gc.add_mut(List(filtered)))
 	} else {
@@ -242,7 +242,7 @@ native_func!(seq_filter, vm, args, {
 native_func!(tuple_to_list, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let tuple = args[0].get_imm::<Tuple>()?;
-	Ok(vm.gc.add_mut(List(tuple.0.clone())))
+	Ok(vm.gc.add_mut(List(tuple.0.to_vec())))
 });
 
 native_func!(list_push, args, {
@@ -295,7 +295,7 @@ native_func!(list_to_tuple, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let list = args[0].get_mut::<List>()?;
 	let list = list.borrow();
-	Ok(vm.gc.add_imm(Tuple(list.0.clone())))
+	Ok(vm.gc.add_imm(Tuple(list.0.clone().into_boxed_slice())))
 });
 
 native_func!(map_contains, args, {
@@ -328,7 +328,7 @@ native_func!(map_pairs, vm, args, {
 	let map = map.borrow();
 	let list: Vec<Value> = map
 		.iter()
-		.map(|(k,v)| vm.gc.add_imm(Tuple(vec![k.clone(), v.clone()])))
+		.map(|(k,v)| vm.gc.add_imm(Tuple(Box::new([k.clone(), v.clone()]))))
 		.collect();
 	Ok(vm.gc.add_mut(List(list)))
 });
@@ -454,17 +454,18 @@ native_func!(iter_to_tuple, vm, args, {
 		values.push(val);
 	}
 	
-	Ok(vm.gc.add_imm(Tuple(values)))
+	Ok(vm.gc.add_imm(Tuple(values.into_boxed_slice())))
 });
 
 native_func!(iter_next, vm, args, {
 	check_arg_cnt(0, args.len() - 1)?;
 	let iter = args[0].get_mut::<NativeIteratorWrapper>()?;
 	let mut iter = iter.borrow_mut();
+	let iter: &mut dyn NativeIterator = iter.deref_mut().deref_mut();
 	
-	let res = match iter.next(vm)? {
-		Some(val) => vec![Value::Bool(true), val],
-		None => vec![Value::Bool(false)],
+	let res: Box<[Value]> = match iter.next(vm)? {
+		Some(val) => Box::new([Value::Bool(true), val]),
+		None => Box::new([Value::Bool(false)]),
 	};
 	Ok(vm.gc.add_imm(Tuple(res)))
 });

@@ -369,7 +369,7 @@ impl VmState {
 						},
 					}
 				}
-				self.push(gc.add_imm(Function { chunk: chunk2, upvalues }));
+				self.push(gc.add_imm(Function { chunk: chunk2, upvalues: upvalues.into_boxed_slice() }));
 			},
 			Instr::Call(arg_cnt) => {
 				let args: Vec<Value> = self.pop_n(arg_cnt as usize)?;
@@ -395,7 +395,7 @@ impl VmState {
 			},
 			Instr::NewTuple(cnt) => {
 				let values = self.pop_n(cnt as usize)?;
-				self.push(gc.add_imm(Tuple(values)));
+				self.push(gc.add_imm(Tuple(values.into_boxed_slice())));
 			},
 			Instr::NewList(cnt) => {
 				let values = self.pop_n(cnt as usize)?;

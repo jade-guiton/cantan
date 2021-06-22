@@ -115,7 +115,7 @@ impl GcCell<dyn MutObject> {
 
 
 #[derive(Trace, Hash)]
-pub struct Tuple(pub Vec<Value>);
+pub struct Tuple(pub Box<[Value]>);
 register_dyn_type!("tuple", Tuple);
 
 impl Object for Tuple {
@@ -305,13 +305,13 @@ pub enum Upvalue {
 #[derive(Trace)]
 pub struct Function {
 	pub chunk: Rc<CompiledFunction>,
-	pub upvalues: Vec<GcCell<Upvalue>>,
+	pub upvalues: Box<[GcCell<Upvalue>]>,
 }
 register_dyn_type!("function", Function);
 
 impl Function {
 	pub fn main(chunk: Rc<CompiledFunction>) -> Self {
-		Function { chunk, upvalues: vec![] }
+		Function { chunk, upvalues: Box::new([]) }
 	}
 }
 

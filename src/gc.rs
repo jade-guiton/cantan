@@ -55,6 +55,21 @@ unsafe impl<T: Trace> Trace for Vec<GcRef<T>> {
 	}
 }
 
+unsafe impl<T: Trace> Trace for [T] {
+	unsafe fn trace(&self, ctx: TraceCtx) {
+		for x in self {
+			x.trace(ctx);
+		}
+	}
+}
+unsafe impl<T: Trace> Trace for [GcRef<T>] {
+	unsafe fn trace(&self, ctx: TraceCtx) {
+		for x in self {
+			x.trace(ctx);
+		}
+	}
+}
+
 unsafe impl<T1: Trace, T2: Trace> Trace for HashMap<T1, T2> {
 	unsafe fn trace(&self, ctx: TraceCtx) {
 		for x in self.keys() {
