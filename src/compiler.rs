@@ -260,8 +260,25 @@ impl<'a> FunctionContext<'a> {
 			},
 			Expr::Binary(op, expr1, expr2) => {
 				self.compile_expression(*expr1)?;
-				self.compile_expression(*expr2)?;
-				self.func.code.push(Instr::Binary(op));
+				let jump = self.func.code.len();
+				match op {
+					BinaryOp::Or => {
+						self.func.code.push(Instr::JumpOr(0));
+						self.compile_expression(*expr2)?;
+						self.func.code[jump] = Instr::JumpOr(
+							self.compute_jump_from(jump)?);
+					},
+					BinaryOp::And => {
+						self.func.code.push(Instr::JumpAnd(0));
+						self.compile_expression(*expr2)?;
+						self.func.code[jump] = Instr::JumpAnd(
+							self.compute_jump_from(jump)?);
+					},
+					_ => {
+						self.compile_expression(*expr2)?;
+						self.func.code.push(Instr::Binary(op));
+					}
+				}
 				self.stack_size -= 2;
 			},
 			Expr::Condition(cond, expr1, expr2) => {

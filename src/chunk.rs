@@ -23,6 +23,8 @@ pub enum Instr {
 	Jump(i16), // Relative jump
 	JumpIf(i16), // Jump if stack top == true
 	JumpIfNot(i16), // Jump if stack top == false
+	JumpOr(i16), // Jump if stack top == true (does not pop)
+	JumpAnd(i16), // Jump if stack top == false (does not pop)
 	
 	// Functions
 	NewFunction(u16), // Instantiate function by index

@@ -352,6 +352,24 @@ impl VmState {
 					jumped = true;
 				}
 			},
+			Instr::JumpOr(rel) => {
+				let val = self.stack.last().ok_or_else(|| String::from("Stack is empty"))?;
+				if val.get_bool()? {
+					self.jump(rel);
+					jumped = true;
+				} else {
+					self.stack.pop().unwrap();
+				}
+			},
+			Instr::JumpAnd(rel) => {
+				let val = self.stack.last().ok_or_else(|| String::from("Stack is empty"))?;
+				if !val.get_bool()? {
+					self.jump(rel);
+					jumped = true;
+				} else {
+					self.stack.pop().unwrap();
+				}
+			},
 			Instr::NewFunction(func_idx) => {
 				let chunk2 = func.chunk.child_funcs.get(func_idx as usize)
 					.ok_or_else(|| String::from("Accessing undefined function"))?
