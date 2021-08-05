@@ -630,8 +630,19 @@ impl VmState {
 		match self.run_instr_unsafe(gc) {
 			Ok(x) => Ok(x),
 			Err(err) => {
+				let stacktrace = self.calls.iter().rev().enumerate().fold(String::new(), |mut st, (i, call)| {
+					match call {
+						Call::Function(f) => {
+							let chunk = &f.func.chunk;
+							let code_idx = if i == 0 { self.idx } else { f.return_idx.unwrap() - 1 };
+							st.push_str(&format!("  @ {} (l{})\n", chunk.name, chunk.code_pos[code_idx]));
+						},
+						Call::Native => st.push_str("  @ <native>\n"),
+					}
+					st
+				});
 				self.unroll();
-				Err(err)
+				Err(format!("Error: {}\n{}", err, stacktrace))
 			}
 		}
 	}

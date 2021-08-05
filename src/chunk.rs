@@ -48,35 +48,6 @@ pub enum Instr {
 	Next(u16), // next(reg(u16)) → (true, value) / false
 }
 
-fn format_cst(func: &CompiledFunction, idx: u16) -> String {
-	format!("#{}", func.csts.get(idx as usize).expect("Invalid constant in function").repr())
-}
-
-impl Instr {
-	fn color_repr(&self, func: &CompiledFunction) -> String {
-		let parts: Vec<String> = match self {
-			Instr::LoadGlobal(name_idx) =>
-				vec![String::from("LoadGlobal"), format_cst(func, *name_idx)],
-			Instr::Constant(idx) =>
-				vec![String::from("Constant"), format_cst(func, *idx)],
-			Instr::Prop(name_idx) =>
-				vec![String::from("Prop"), format_cst(func, *name_idx)],
-			Instr::SetProp(name_idx) =>
-				vec![String::from("SetProp"), format_cst(func, *name_idx)],
-			_ => {
-				let repr = format!("{:?}", self);
-				repr.strip_suffix(")").unwrap_or(&repr).split('(').map(|s| s.to_string()).collect()
-			},
-		};
-		let mut buf = String::new();
-		write!(buf, "{}{}{}", CYAN, parts[0], RESET).unwrap();
-		if let Some(args) = parts.get(1) {
-			write!(buf, " {}", args).unwrap();
-		}
-		buf
-	}
-}
-
 #[derive(Clone)]
 pub enum CompiledUpvalue {
 	Direct(u16), // Refer to register in parent function
@@ -85,35 +56,86 @@ pub enum CompiledUpvalue {
 
 #[derive(Clone)]
 pub struct CompiledFunction {
+	pub name: String,
 	pub child_funcs: Vec<Rc<CompiledFunction>>,
 	pub arg_cnt: u16,
 	pub csts: Vec<Value>,
 	pub upvalues: Vec<CompiledUpvalue>,
 	pub classes: Vec<Vec<String>>,
 	pub code: Vec<Instr>,
+	pub code_pos: Vec<usize>,
 }
 
 impl CompiledFunction {
-	pub fn new(arg_cnt: u16) -> Self {
+	pub fn new(arg_cnt: u16, name: Option<String>) -> Self {
 		CompiledFunction {
+			name: name.unwrap_or_else(|| String::from("<anon>")),
 			child_funcs: vec![],
 			arg_cnt,
 			csts: vec![],
 			upvalues: vec![],
 			classes: vec![],
 			code: vec![],
+			code_pos: vec![],
 		}
 	}
 	
-	pub fn list(&self) {
-		println!("{}Function{}({} args, {} constants, {} object classes):{}",
-			BRIGHT_GREEN, BRIGHT_WHITE, self.arg_cnt, self.csts.len(), self.classes.len(), RESET);
+	pub fn list(&self, path: String) {
+		let path_desc = if path.len() > 0 { format!(" ({})", path) } else { String::new() };
+		println!("{}Function {}{}{} ({} args):{}",
+			BRIGHT_GREEN, self.name, path_desc, BRIGHT_WHITE, self.arg_cnt, RESET);
 		for (idx, instr) in self.code.iter().enumerate() {
-			println!("{}{:^4}{} {}", BRIGHT_BLACK, idx, RESET, instr.color_repr(self));
+			let repr = {
+				let repr = format!("{:?}", instr);
+				let mut parts: Vec<String> = repr.strip_suffix(")").unwrap_or(&repr)
+					.split('(').map(|s| s.to_string()).collect();
+				match instr {
+					Instr::LoadGlobal(cst_idx) | Instr::Constant(cst_idx) | Instr::Prop(cst_idx) | Instr::SetProp(cst_idx) => {
+						parts[1] = format!("#{}", self.csts.get(*cst_idx as usize).expect("Invalid constant in function").repr());
+					},
+					Instr::LoadUpv(upv_idx) | Instr::StoreUpv(upv_idx) => {
+						let upv = self.upvalues.get(*upv_idx as usize).expect("Invalid upvalue in function");
+						parts[1] = match upv {
+							CompiledUpvalue::Direct(reg_idx) => format!("r{}", reg_idx),
+							CompiledUpvalue::Indirect(upv_idx) => format!("u{}", upv_idx),
+						};
+					},
+					Instr::Jump(rel_jmp) | Instr::JumpIf(rel_jmp) | Instr::JumpIfNot(rel_jmp) | Instr::JumpOr(rel_jmp) | Instr::JumpAnd(rel_jmp) => {
+						parts[1] = format!("@{}", (idx as isize) + *rel_jmp as isize);
+					},
+					Instr::NewStruct(class_idx) => {
+						let class = self.classes.get(*class_idx as usize).expect("Invalid class in function");
+						let mut class_repr = String::from("(");
+						for (i, prop) in class.iter().enumerate() {
+							if i != 0 {
+								class_repr.push_str(", ");
+							}
+							class_repr.push_str(prop);
+						}
+						class_repr.push_str(")");
+						parts[1] = class_repr;
+					},
+					Instr::NewFunction(fn_idx) => {
+						parts[1] = format!("{}.{}", path, fn_idx);
+					},
+					_ => {},
+				};
+				let mut buf = String::new();
+				write!(buf, "{}{}{}", CYAN, parts[0], RESET).unwrap();
+				if let Some(args) = parts.get(1) {
+					write!(buf, " {}", args).unwrap();
+				}
+				buf
+			};
+			let line = self.code_pos[idx];
+			let line_desc = if idx == 0 || line != self.code_pos[idx-1] {
+				format!("(l{})", line)
+			} else { String::new() };	
+			println!(" {}{:<4} {:<7}{} {}", BRIGHT_BLACK, idx, line_desc, RESET, repr);
 		}
 		println!();
-		for child in &self.child_funcs {
-			child.list();
+		for (idx, child) in self.child_funcs.iter().enumerate() {
+			child.list(format!("{}.{}", path, idx));
 		}
 	}
 }

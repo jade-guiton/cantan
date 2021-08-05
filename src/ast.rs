@@ -64,4 +64,7 @@ pub enum Statement {
 	ExprStat(Expr),
 }
 
-pub type Block = Vec<Statement>;
+#[derive(Debug, Clone)]
+pub struct PositionedStatement(pub usize, pub Statement);
+
+pub type Block = Vec<PositionedStatement>;

@@ -3,6 +3,7 @@
 #![feature(coerce_unsized)]
 #![feature(result_flattening)]
 #![feature(const_type_id)]
+#![feature(partition_point)]
 
 #[macro_use]
 extern crate cantan_derive;
@@ -93,7 +94,7 @@ fn main() {
 				},
 				"compile" => {
 					if let Some(prog) = compile(&cmd.file.unwrap()) {
-						prog.list();
+						prog.list(String::new());
 					}
 				},
 				"repl" => {

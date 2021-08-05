@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use rustyline::{Editor, error::ReadlineError};
 
-use crate::ast::Statement;
+use crate::ast::{Statement, PositionedStatement};
 use crate::colors::*;
 use crate::compiler::InteractiveContext;
 use crate::grammar::parse_partial_stat;
@@ -78,10 +78,9 @@ impl Repl {
 		let mut func_ctx = self.inter_ctx.make_func_ctx();
 		
 		if let Statement::ExprStat(expr) = stat {
-			func_ctx.compile_expression(expr)?;
-			func_ctx.add_log();
+			func_ctx.compile_expression_log(expr)?;
 		} else {
-			func_ctx.compile_statement(stat)?;
+			func_ctx.compile_statement(PositionedStatement(1, stat))?;
 		}
 		
 		if self.show_bytecode {
@@ -106,7 +105,7 @@ impl Repl {
 		
 		while let Some(stat) = self.read_statement() {
 			if let Err(err) = self.run_stat(stat) {
-				print_err(&err);
+				print_err(&err.trim_end());
 			}
 			println!();
 		}

@@ -18,13 +18,26 @@ static RESERVED: [&str; 20] = [
 	"fn",
 ];
 
+fn compute_line_starts(file: &str) -> Vec<usize> {
+	let mut line_starts = vec![0];
+	for (i, c) in file.as_bytes().iter().enumerate() {
+		if *c == b'\n' {
+			line_starts.push(i + 1);
+		}
+	}
+	line_starts.push(file.len());
+	line_starts
+}
+
 pub fn parse(path: &str) -> Result<Block, String> {
 	let file = read_to_string(path).map_err(|_| String::from("Unable to open file"))?;
-	cantan_parser::program(&file).map_err(|err| format!("{}", err))
+	let line_starts = compute_line_starts(&file);
+	cantan_parser::program(&file, &line_starts).map_err(|err| format!("{}", err))
 }
 
 pub fn parse_partial_stat(src: &str) -> Option<Result<Statement, String>> {
-	match cantan_parser::lone_statement(src) {
+	let line_starts = compute_line_starts(&src);
+	match cantan_parser::lone_statement(src, &line_starts) {
 		Ok(stat) => Some(Ok(stat)),
 		Err(err) => {
 			if err.location.offset == src.len() {
@@ -37,11 +50,13 @@ pub fn parse_partial_stat(src: &str) -> Option<Result<Statement, String>> {
 }
 
 peg::parser! {
-	grammar cantan_parser() for str {
+	grammar cantan_parser(line_starts: &[usize]) for str {
 		pub rule program() -> Block = _ b:block() _ { b }
-		rule block() -> Block = s:(statement() ** statement_sep()) { s }
+		rule block() -> Block = s:(positioned_statement() ** statement_sep()) { s }
 		rule statement_sep() = ___ ("\n" / ";" / comment()) _
 		pub rule lone_statement() -> Statement = _ s:(s:statement() {s} / e:expr() {Statement::ExprStat(e)}) _ { s }
+		rule positioned_statement() -> PositionedStatement
+			= l:line_no() s:statement() { PositionedStatement(l, s) }
 		rule statement() -> Statement
 			= "let" wb() _ p:pattern() _ e:val_or_fn() { Statement::Let(p, e) }
 			/ "if" _ c:pexpr() _ t:block() _ ei:else_if()* e:else_()? "end" wb() { Statement::If(c,t,ei,e) }
@@ -160,7 +175,7 @@ peg::parser! {
 		rule fn_def() -> Expr = "(" _ a:(id() ** (_ "," _)) _ ")" _ b:fn_body()
 				{ Expr::Function(a, b) }
 		rule fn_body() -> Block
-			= "=" _ e:expr() { vec![ Statement::Return(e) ] }
+			= "=" _ l:line_no() e:expr() { vec![ PositionedStatement(l, Statement::Return(e)) ] }
 			/ b:block() _ "end" wb() { b }
 		
 		rule wb() = &__ / !XIDContinue() // word boundary
@@ -179,6 +194,9 @@ peg::parser! {
 			/ expected!("float")
 		rule string() -> String
 			= quiet!{ "\"" c:string_char()* "\"" { c.into_iter().collect() } } / expected!("string")
+		
+		rule line_no() -> usize
+			= p:position!() { line_starts.partition_point(|s| *s <= p) }
 		
 		#[cache]
 		rule _() = quiet!{([' '|'\t'|'\n']*)**comment()}

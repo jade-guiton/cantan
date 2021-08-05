@@ -35,6 +35,7 @@ pub struct FunctionContext<'a> {
 	used_regs: IntSet<u16>,
 	blocks: Vec<BlockContext>,
 	cur_def: Option<(String, u16)>,
+	cur_code_pos: Option<usize>,
 	upvalues: Vec<UpvalueSpec>,
 	stack_size: usize,
 }
@@ -55,7 +56,7 @@ impl InteractiveContext {
 	pub fn make_func_ctx(&self) -> FunctionContext<'static> {
 		FunctionContext {
 			parent: None,
-			func: CompiledFunction::new(0),
+			func: CompiledFunction::new(0, Some(String::from("<repl>"))),
 			arg_names: vec![],
 			used_regs: self.used_regs.clone(),
 			blocks: vec![
@@ -65,6 +66,7 @@ impl InteractiveContext {
 				}
 			],
 			cur_def: None,
+			cur_code_pos: None,
 			upvalues: vec![],
 			stack_size: 0,
 		}
@@ -78,19 +80,25 @@ impl InteractiveContext {
 }
 
 impl<'a> FunctionContext<'a> {
-	pub fn new(arg_names: Vec<String>, parent: Option<&'a FunctionContext<'a>>) -> Result<Self, String> {
+	pub fn new(arg_names: Vec<String>, parent: Option<&'a FunctionContext<'a>>, name: Option<String>) -> Result<Self, String> {
 		let arg_cnt = u16::try_from(arg_names.len())
 			.map_err(|_| String::from("Too many arguments in function"))?;
 		Ok(FunctionContext {
 			parent,
-			func: CompiledFunction::new(arg_cnt),
+			func: CompiledFunction::new(arg_cnt, name),
 			arg_names,
 			used_regs: IntSet::new(),
 			blocks: vec![],
 			cur_def: None,
+			cur_code_pos: None,
 			upvalues: vec![],
 			stack_size: 0,
 		})
+	}
+	
+	fn emit(&mut self, instr: Instr) {
+		self.func.code.push(instr);
+		self.func.code_pos.push(self.cur_code_pos.unwrap());
 	}
 	
 	fn new_upvalue(&mut self, upv: UpvalueSpec) -> Result<u16, String> {
@@ -148,12 +156,12 @@ impl<'a> FunctionContext<'a> {
 		let len = u16::try_from(values.len())
 			.map_err(|_| format!("{} is too long", if mutable { "List" } else { "Tuple"} ))?;
 		for expr in values {
-			self.compile_expression(expr)?;
+			self.compile_expression(expr, None)?;
 		}
 		if mutable {
-			self.func.code.push(Instr::NewList(len));
+			self.emit(Instr::NewList(len));
 		} else {
-			self.func.code.push(Instr::NewTuple(len));
+			self.emit(Instr::NewTuple(len));
 		}
 		self.stack_size -= len as usize;
 		Ok(())
@@ -170,11 +178,11 @@ impl<'a> FunctionContext<'a> {
 		}
 	}
 
-	pub fn compile_expression(&mut self, expr: Expr) -> Result<(), String> {
+	pub fn compile_expression(&mut self, expr: Expr, name: Option<String>) -> Result<(), String> {
 		match expr {
 			Expr::Primitive(cst) => {
 				let idx = self.add_prim_cst(Value::from(&cst))?;
-				self.func.code.push(Instr::Constant(idx));
+				self.emit(Instr::Constant(idx));
 			},
 			Expr::Tuple(values) => self.compile_sequence(values, false)?,
 			Expr::List(values) => self.compile_sequence(values, true)?,
@@ -182,10 +190,10 @@ impl<'a> FunctionContext<'a> {
 				let len = u16::try_from(pairs.len())
 					.map_err(|_| String::from("Map is too large"))?;
 				for (key, value) in pairs {
-					self.compile_expression(key)?;
-					self.compile_expression(value)?;
+					self.compile_expression(key, None)?;
+					self.compile_expression(value, None)?;
 				}
-				self.func.code.push(Instr::NewMap(len));
+				self.emit(Instr::NewMap(len));
 				self.stack_size -= 2*len as usize;
 			},
 			Expr::Struct(pairs) => {
@@ -193,8 +201,8 @@ impl<'a> FunctionContext<'a> {
 					.map_err(|_| String::from("Struct is too large"))?;
 				let mut class = vec![];
 				for (id, value) in pairs {
-					class.push(id);
-					self.compile_expression(value)?;
+					class.push(id.clone());
+					self.compile_expression(value, Some(id))?;
 				}
 				let idx = self.func.classes.iter().position(|c| c == &class)
 					.unwrap_or_else(|| {
@@ -203,42 +211,42 @@ impl<'a> FunctionContext<'a> {
 						idx
 					});
 				let idx = u16::try_from(idx).map_err(|_| String::from("Too many struct classes"))?;
-				self.func.code.push(Instr::NewStruct(idx));
+				self.emit(Instr::NewStruct(idx));
 				self.stack_size -= len as usize;
 			},
 			Expr::Function(arg_names, block) => {
 				let idx = u16::try_from(self.func.child_funcs.len())
 					.map_err(|_| String::from("Too many functions"))?;
-				let (mut func, upvalues) = FunctionContext::new(arg_names, Some(self))?
+				let (mut func, upvalues) = FunctionContext::new(arg_names, Some(self), name)?
 					.compile_function(block)?;
 				self.compile_upvalues(&mut func, upvalues)?;
 				self.func.child_funcs.push(Rc::new(func));
-				self.func.code.push(Instr::NewFunction(idx));
+				self.emit(Instr::NewFunction(idx));
 			},
 			Expr::LExpr(lexpr) => {
 				match lexpr {
 					LExpr::Id(id) => {
 						if let Some(reg) = self.find_local(&id) {
-							self.func.code.push(Instr::Load(reg));
+							self.emit(Instr::Load(reg));
 						} else if let Some(upv) = self.find_upvalue(&id)? {
-							self.func.code.push(Instr::LoadUpv(upv));
+							self.emit(Instr::LoadUpv(upv));
 						} else if crate::stdlib::GLOBAL_NAMES.contains(&id) {
 							let idx = self.add_prim_cst(Value::String(id.into_boxed_str()))?;
-							self.func.code.push(Instr::LoadGlobal(idx));
+							self.emit(Instr::LoadGlobal(idx));
 						} else {
 							return Err(format!("Referencing undefined value '{}'", id));
 						}
 					},
 					LExpr::Index(seq, idx) => {
-						self.compile_expression(*seq)?;
-						self.compile_expression(*idx)?;
-						self.func.code.push(Instr::Index);
+						self.compile_expression(*seq, None)?;
+						self.compile_expression(*idx, None)?;
+						self.emit(Instr::Index);
 						self.stack_size -= 2;
 					},
 					LExpr::Prop(obj, prop) => {
-						self.compile_expression(*obj)?;
+						self.compile_expression(*obj, None)?;
 						let cst_idx = self.add_prim_cst(Value::String(prop.into_boxed_str()))?;
-						self.func.code.push(Instr::Prop(cst_idx));
+						self.emit(Instr::Prop(cst_idx));
 						self.stack_size -= 1;
 					},
 				}
@@ -246,52 +254,52 @@ impl<'a> FunctionContext<'a> {
 			Expr::Call(func, args) => {
 				let arg_cnt = u16::try_from(args.len())
 					.map_err(|_| String::from("Too many arguments in function call"))?;
-				self.compile_expression(*func)?;
+				self.compile_expression(*func, None)?;
 				for arg in args {
-					self.compile_expression(arg)?;
+					self.compile_expression(arg, None)?;
 				}
-				self.func.code.push(Instr::Call(arg_cnt));
+				self.emit(Instr::Call(arg_cnt));
 				self.stack_size -= 1 + (arg_cnt as usize);
 			},
 			Expr::Unary(op, expr) => {
-				self.compile_expression(*expr)?;
-				self.func.code.push(Instr::Unary(op));
+				self.compile_expression(*expr, None)?;
+				self.emit(Instr::Unary(op));
 				self.stack_size -= 1;
 			},
 			Expr::Binary(op, expr1, expr2) => {
-				self.compile_expression(*expr1)?;
+				self.compile_expression(*expr1, None)?;
 				let jump = self.func.code.len();
 				match op {
 					BinaryOp::Or => {
-						self.func.code.push(Instr::JumpOr(0));
-						self.compile_expression(*expr2)?;
+						self.emit(Instr::JumpOr(0));
+						self.compile_expression(*expr2, None)?;
 						self.func.code[jump] = Instr::JumpOr(
 							self.compute_jump_from(jump)?);
 					},
 					BinaryOp::And => {
-						self.func.code.push(Instr::JumpAnd(0));
-						self.compile_expression(*expr2)?;
+						self.emit(Instr::JumpAnd(0));
+						self.compile_expression(*expr2, None)?;
 						self.func.code[jump] = Instr::JumpAnd(
 							self.compute_jump_from(jump)?);
 					},
 					_ => {
-						self.compile_expression(*expr2)?;
-						self.func.code.push(Instr::Binary(op));
+						self.compile_expression(*expr2, None)?;
+						self.emit(Instr::Binary(op));
 					}
 				}
 				self.stack_size -= 2;
 			},
 			Expr::Condition(cond, expr1, expr2) => {
-				self.compile_expression(*cond)?;
+				self.compile_expression(*cond, None)?;
 				let jump1 = self.func.code.len();
-				self.func.code.push(Instr::JumpIfNot(0));
+				self.emit(Instr::JumpIfNot(0));
 				self.stack_size -= 1;
-				self.compile_expression(*expr1)?;
+				self.compile_expression(*expr1, None)?;
 				let jump2 = self.func.code.len();
-				self.func.code.push(Instr::Jump(0));
+				self.emit(Instr::Jump(0));
 				self.func.code[jump1] = Instr::JumpIfNot(
 					self.compute_jump_from(jump1)?);
-				self.compile_expression(*expr2)?;
+				self.compile_expression(*expr2, None)?;
 				self.func.code[jump2] = Instr::Jump(
 					self.compute_jump_from(jump2)?);
 				self.stack_size -= 2;
@@ -328,23 +336,25 @@ impl<'a> FunctionContext<'a> {
 		let locals = &mut self.blocks.last_mut().unwrap().locals;
 		if locals.contains_key(&id) {
 			// Shadow previous binding
-			self.func.code.push(Instr::Drop(reg));
+			self.emit(Instr::Drop(reg));
 		} else {
 			locals.insert(id, reg);
 		}
-		self.func.code.push(Instr::Store(reg));
+		self.emit(Instr::Store(reg));
 		self.stack_size -= 1;
 		reg
 	}
 
-	pub fn compile_statement(&mut self, stat: Statement) -> Result<(), String> {
+	pub fn compile_statement(&mut self, stat: PositionedStatement) -> Result<(), String> {
+		let PositionedStatement(pos, stat) = stat;
+		self.cur_code_pos = Some(pos);
 		match stat {
 			Statement::Let(pat, expr) => {
 				match pat {
 					Pattern::Id(id) => {
 						self.start_def(&id);
 						
-						self.compile_expression(expr)?;
+						self.compile_expression(expr, Some(id))?;
 						
 						self.finish_def();
 					},
@@ -354,29 +364,29 @@ impl<'a> FunctionContext<'a> {
 				match lexpr {
 					LExpr::Id(id) => {
 						if let Some(reg) = self.find_local(&id) {
-							self.compile_expression(expr)?;
-							self.func.code.push(Instr::Store(reg));
+							self.compile_expression(expr, Some(id))?;
+							self.emit(Instr::Store(reg));
 							self.stack_size -= 1;
 						} else if let Some(upv) = self.find_upvalue(&id)? {
-							self.compile_expression(expr)?;
-							self.func.code.push(Instr::StoreUpv(upv));
+							self.compile_expression(expr, Some(id))?;
+							self.emit(Instr::StoreUpv(upv));
 							self.stack_size -= 1;
 						} else {
 							return Err(format!("Referencing undefined local '{}'", id));
 						}
 					},
 					LExpr::Index(coll, idx) => {
-						self.compile_expression(*coll)?;
-						self.compile_expression(*idx)?;
-						self.compile_expression(expr)?;
-						self.func.code.push(Instr::SetIndex);
+						self.compile_expression(*coll, None)?;
+						self.compile_expression(*idx, None)?;
+						self.compile_expression(expr, None)?;
+						self.emit(Instr::SetIndex);
 						self.stack_size -= 3;
 					},
 					LExpr::Prop(obj, prop) => {
-						self.compile_expression(*obj)?;
-						let cst_idx = self.add_prim_cst(Value::String(prop.into_boxed_str()))?;
-						self.compile_expression(expr)?;
-						self.func.code.push(Instr::SetProp(cst_idx));
+						self.compile_expression(*obj, None)?;
+						let cst_idx = self.add_prim_cst(Value::String(prop.clone().into_boxed_str()))?;
+						self.compile_expression(expr, Some(prop))?;
+						self.emit(Instr::SetProp(cst_idx));
 						self.stack_size -= 2;
 					},
 				}
@@ -388,9 +398,9 @@ impl<'a> FunctionContext<'a> {
 				let conds = 1 + elseifs.len();
 				
 				for (i, (cond, block)) in vec![(cond, then)].drain(..).chain(elseifs).enumerate() {
-					self.compile_expression(cond)?;
+					self.compile_expression(cond, None)?;
 					prev_jump = self.func.code.len();
-					self.func.code.push(Instr::JumpIfNot(0));
+					self.emit(Instr::JumpIfNot(0));
 					self.stack_size -= 1;
 					
 					self.compile_block(block, BlockType::Normal)?;
@@ -398,7 +408,7 @@ impl<'a> FunctionContext<'a> {
 					// Only place a jump if there is another block afterwars
 					if !(i == conds - 1 && else_block.is_none()) {
 						end_jumps.push(self.func.code.len());
-						self.func.code.push(Instr::Jump(0));
+						self.emit(Instr::Jump(0));
 					}
 					
 					self.func.code[prev_jump] = Instr::JumpIfNot(
@@ -417,13 +427,13 @@ impl<'a> FunctionContext<'a> {
 			Statement::While(cond, block) => {
 				let start = self.func.code.len();
 				
-				self.compile_expression(cond)?;
+				self.compile_expression(cond, None)?;
 				let end_jump = self.func.code.len();
-				self.func.code.push(Instr::JumpIfNot(0));
+				self.emit(Instr::JumpIfNot(0));
 				self.stack_size -= 1;
 				
 				let block_ctx = self.compile_block(block, BlockType::Breakable)?;
-				self.func.code.push(Instr::Jump(
+				self.emit(Instr::Jump(
 					self.compute_jump_to(start)?));
 				
 				self.func.code[end_jump] = Instr::JumpIfNot(
@@ -437,8 +447,8 @@ impl<'a> FunctionContext<'a> {
 				let block_ctx = self.compile_block(block, BlockType::Breakable)?;
 				
 				let cond_idx = self.func.code.len();
-				self.compile_expression(cond)?;
-				self.func.code.push(Instr::JumpIf(
+				self.compile_expression(cond, None)?;
+				self.emit(Instr::JumpIf(
 					self.compute_jump_to(start)?));
 				self.stack_size -= 1;
 				
@@ -449,7 +459,7 @@ impl<'a> FunctionContext<'a> {
 				
 				let block_ctx = self.compile_block(block, BlockType::Breakable)?;
 				
-				self.func.code.push(Instr::Jump(self.compute_jump_to(start)?));
+				self.emit(Instr::Jump(self.compute_jump_to(start)?));
 				
 				self.finish_loop(block_ctx, start)?;
 			},
@@ -458,17 +468,17 @@ impl<'a> FunctionContext<'a> {
 				// loop block
 				self.start_block(BlockType::Normal);
 				self.start_def("");
-				self.compile_expression(iter)?;
+				self.compile_expression(iter, None)?;
 				let iter_reg = self.finish_def();
 				
 				let start = self.func.code.len();
 				
 				self.start_block(BlockType::Breakable);
 				
-				self.func.code.push(Instr::Next(iter_reg));
+				self.emit(Instr::Next(iter_reg));
 				self.stack_size += 1;
 				let end_jump = self.func.code.len();
-				self.func.code.push(Instr::JumpIfNot(0));
+				self.emit(Instr::JumpIfNot(0));
 				self.start_def(&id);
 				self.finish_def();
 				
@@ -478,7 +488,7 @@ impl<'a> FunctionContext<'a> {
 				
 				let block_ctx = self.finish_block();
 				
-				self.func.code.push(Instr::Jump(
+				self.emit(Instr::Jump(
 					self.compute_jump_to(start)?));
 				self.finish_loop(block_ctx, start)?;
 				
@@ -496,7 +506,7 @@ impl<'a> FunctionContext<'a> {
 					}
 					let block = &mut self.blocks[block_idx];
 					block.breaks.push(self.func.code.len());
-					self.func.code.push(Instr::Jump(0));
+					self.emit(Instr::Jump(0));
 				} else {
 					return Err(format!("Cannot break {} loops", loops));
 				}
@@ -510,23 +520,23 @@ impl<'a> FunctionContext<'a> {
 					}
 					let block = &mut self.blocks[block_idx];
 					block.continues.push(self.func.code.len());
-					self.func.code.push(Instr::Jump(0));
+					self.emit(Instr::Jump(0));
 				} else {
 					return Err(format!("Cannot continue {} loops", loops));
 				}
 			},
 			Statement::Return(expr) => {
-				self.compile_expression(expr)?;
+				self.compile_expression(expr, None)?;
 				// Drop all locals
 				for block_idx in (0..self.blocks.len()).rev() {
 					self.drop_locals(block_idx, true);
 				}
-				self.func.code.push(Instr::Return);
+				self.emit(Instr::Return);
 				self.stack_size -= 1;
 			},
 			Statement::ExprStat(expr) => {
-				self.compile_expression(expr)?;
-				self.func.code.push(Instr::Discard);
+				self.compile_expression(expr, None)?;
+				self.emit(Instr::Discard);
 				self.stack_size -= 1;
 			},
 		}
@@ -557,10 +567,10 @@ impl<'a> FunctionContext<'a> {
 	// before jumping, where we don't want to forget about those
 	// locals in the rest of the code quite yet.
 	fn drop_locals(&mut self, block_idx: usize, emit_only: bool) {
-		let block = &self.blocks[block_idx];
-		for reg in block.locals.values() {
-			self.func.code.push(Instr::Drop(*reg));
-			if !emit_only { self.used_regs.remove(*reg); }
+		let regs: Vec<u16> = self.blocks[block_idx].locals.values().copied().collect();
+		for reg in regs {
+			self.emit(Instr::Drop(reg));
+			if !emit_only { self.used_regs.remove(reg); }
 		}
 	}
 	
@@ -595,9 +605,12 @@ impl<'a> FunctionContext<'a> {
 		Ok(())
 	}
 	
-	pub fn add_log(&mut self) {
-		self.func.code.push(Instr::Log);
+	pub fn compile_expression_log(&mut self, expr: Expr) -> Result<(), String> {
+		self.cur_code_pos = Some(1);
+		self.compile_expression(expr, None)?;
+		self.emit(Instr::Log);
 		self.stack_size -= 1;
+		Ok(())
 	}
 	
 	pub fn compile_function(mut self, block: Block) -> Result<(CompiledFunction, Vec<UpvalueSpec>), String> {
@@ -607,5 +620,5 @@ impl<'a> FunctionContext<'a> {
 }
 
 pub fn compile_program(prog: Block) -> Result<CompiledFunction, String> {
-	Ok(FunctionContext::new(vec![], None)?.compile_function(prog)?.0)
+	Ok(FunctionContext::new(vec![], None, Some(String::from("<root>")))?.compile_function(prog)?.0)
 }
