@@ -12,7 +12,7 @@ pub enum Instr {
 	// Register and stack management
 	Load(u16), // Reg → Stack top
 	LoadUpv(u16), // Upvalue → Stack top
-	LoadGlobal(u16), // Constant(reg(u16)) → Stack top
+	LoadGlobal(u16), // Constant(reg(u16)) → Stack top
 	Store(u16), // Stack top → Reg
 	StoreUpv(u16), // Stack top → Upvalue
 	Drop(u16), // Drop reg

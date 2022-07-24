@@ -3,7 +3,6 @@
 #![feature(coerce_unsized)]
 #![feature(result_flattening)]
 #![feature(const_type_id)]
-#![feature(partition_point)]
 
 #[macro_use]
 extern crate cantan_derive;
