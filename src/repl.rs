@@ -54,7 +54,8 @@ impl Repl {
 						match res {
 							Ok(stat) => return Some(stat),
 							Err(err) => {
-								print_err(&err);
+								print_err(&format!("Invalid syntax: {}", err));
+								println!();
 								buffer.clear();
 								new_stat = true;
 							}
